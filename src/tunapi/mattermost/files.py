@@ -4,12 +4,24 @@ from __future__ import annotations
 
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from ..logging import get_logger
 
 logger = get_logger(__name__)
+
+@dataclass(frozen=True, slots=True)
+class FilePutResult:
+    message: str = ""
+    path: Path | None = None
+    name: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.path is not None
+
 
 DEFAULT_DENY_GLOBS = (
     ".git/**",
@@ -86,12 +98,12 @@ async def handle_file_put(
     target_dir: Path,
     deny_globs: tuple[str, ...] = DEFAULT_DENY_GLOBS,
     max_bytes: int = 20 * 1024 * 1024,
-) -> list[str]:
+) -> list[FilePutResult]:
     """Download files from a Mattermost post and save to target_dir.
 
-    Returns a list of result messages (one per file).
+    Returns a list of :class:`FilePutResult` (one per file).
     """
-    results: list[str] = []
+    results: list[FilePutResult] = []
 
     for file_id in file_ids:
         # Get file info
@@ -100,11 +112,13 @@ async def handle_file_put(
         # Download file bytes
         data = await client.get_file(file_id)
         if data is None:
-            results.append(f"failed to download file `{file_id}`")
+            results.append(FilePutResult(message=f"failed to download file `{file_id}`"))
             continue
 
         if len(data) > max_bytes:
-            results.append(f"file too large ({format_bytes(len(data))}, max {format_bytes(max_bytes)})")
+            results.append(FilePutResult(
+                message=f"file too large ({format_bytes(len(data))}, max {format_bytes(max_bytes)})",
+            ))
             continue
 
         # Use file_id as filename if info not available
@@ -114,22 +128,23 @@ async def handle_file_put(
 
         rel = normalize_relative_path(filename)
         if rel is None:
-            results.append(f"invalid filename `{filename}`")
+            results.append(FilePutResult(message=f"invalid filename `{filename}`"))
             continue
 
         reason = deny_reason(rel, deny_globs)
         if reason:
-            results.append(f"denied: `{filename}` — {reason}")
+            results.append(FilePutResult(message=f"denied: `{filename}` — {reason}"))
             continue
 
         target = resolve_path(rel, target_dir)
         if target is None:
-            results.append(f"path escape: `{filename}`")
+            results.append(FilePutResult(message=f"path escape: `{filename}`"))
             continue
 
         write_bytes_atomic(target, data)
-        results.append(f"saved `{rel}` ({format_bytes(len(data))})")
-        logger.info("file.put", filename=rel, size=len(data))
+        msg = f"saved `{rel}` ({format_bytes(len(data))})"
+        results.append(FilePutResult(message=msg, path=target, name=rel))
+        logger.info("file.put", filename=rel, size=len(data), path=str(target))
 
     return results
 

@@ -33,6 +33,7 @@ def _decode_fixture(name: str) -> list[str]:
     "fixture",
     [
         "claude_stream_json_session.jsonl",
+        "claude_rate_limit_event.jsonl",
     ],
 )
 def test_claude_schema_parses_fixture(fixture: str) -> None:

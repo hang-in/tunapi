@@ -22,7 +22,7 @@ from .commands import (
     handle_trigger,
     parse_slash_command,
 )
-from .files import handle_file_get, handle_file_put
+from .files import FilePutResult, handle_file_get, handle_file_put
 from .parsing import parse_ws_event
 from .trigger_mode import resolve_trigger_mode, should_trigger, strip_mention
 from .types import MattermostIncomingMessage, MattermostReactionEvent
@@ -158,7 +158,7 @@ async def _handle_file_command(
             deny_globs=cfg.files_deny_globs,
             max_bytes=cfg.files_max_upload_bytes,
         )
-        text = "\n".join(f"- {r}" for r in results) if results else "No files processed."
+        text = "\n".join(f"- {r.message}" for r in results) if results else "No files processed."
         await _send_to_channel(cfg, msg.channel_id, RenderedMessage(text=text))
         return True
 
@@ -275,11 +275,11 @@ async def _dispatch_message(
             deny_globs=cfg.files_deny_globs,
             max_bytes=cfg.files_max_upload_bytes,
         )
-        text = "\n".join(f"- {r}" for r in results) if results else "No files processed."
+        text = "\n".join(f"- {r.message}" for r in results) if results else "No files processed."
         await send(RenderedMessage(text=text))
         return
 
-    # -- File + text: save files, add paths to prompt --
+    # -- File + text: save files, add absolute paths to prompt --
     file_context = ""
     if msg.file_ids and msg.text.strip() and cfg.files_enabled:
         context = cfg.runtime.default_context_for_chat(msg.channel_id)
@@ -294,9 +294,10 @@ async def _dispatch_message(
             deny_globs=cfg.files_deny_globs,
             max_bytes=cfg.files_max_upload_bytes,
         )
-        saved = [r for r in results if r.startswith("saved")]
-        if saved:
-            file_context = "\n[Attached files: " + ", ".join(saved) + "]\n"
+        saved_paths = [str(r.path) for r in results if r.ok and r.path]
+        if saved_paths:
+            paths_str = ", ".join(f"`{p}`" for p in saved_paths)
+            file_context = f"\n[Attached files saved to: {paths_str}]\n"
 
     # -- Voice transcription --
     voice_text = await _handle_voice(msg, cfg)

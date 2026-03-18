@@ -123,6 +123,8 @@ class GeminiRunner(ResumeTokenMixin, JsonlSubprocessRunner):
 
     gemini_cmd: str = "gemini"
     model: str | None = "auto"
+    yolo: bool = False
+    approval_mode: str | None = "auto_edit"
     session_title: str = "gemini"
     logger = logger
 
@@ -135,7 +137,11 @@ class GeminiRunner(ResumeTokenMixin, JsonlSubprocessRunner):
     def build_args(
         self, prompt: str, resume: ResumeToken | None, *, state: Any
     ) -> list[str]:
-        args: list[str] = ["-p", prompt, "--output-format", "stream-json", "-y"]
+        args: list[str] = ["-p", prompt, "--output-format", "stream-json"]
+        if self.yolo:
+            args.append("-y")
+        elif self.approval_mode:
+            args.extend(["--approval-mode", self.approval_mode])
         if resume is not None:
             args.extend(["--resume", resume.value])
         if self.model is not None:
@@ -221,8 +227,16 @@ class GeminiRunner(ResumeTokenMixin, JsonlSubprocessRunner):
 def build_runner(config: EngineConfig, _config_path: Path) -> Runner:
     gemini_cmd = shutil.which("gemini") or "gemini"
     model = config.get("model", "auto")
+    yolo = config.get("yolo", False) is True
+    approval_mode = config.get("approval_mode", "auto_edit")
     title = str(model) if model else "gemini"
-    return GeminiRunner(gemini_cmd=gemini_cmd, model=model, session_title=title)
+    return GeminiRunner(
+        gemini_cmd=gemini_cmd,
+        model=model,
+        yolo=yolo,
+        approval_mode=approval_mode,
+        session_title=title,
+    )
 
 
 BACKEND = EngineBackend(

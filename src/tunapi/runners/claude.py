@@ -274,6 +274,14 @@ def translate_claude_event(
                     usage=usage or None,
                 )
             ]
+        case claude_schema.StreamRateLimitEvent():
+            logger.warning(
+                "claude rate limit event",
+                engine=ENGINE,
+                rate_limit_info=getattr(event, "rate_limit_info", None),
+                message=getattr(event, "message", None),
+            )
+            return []
         case _:
             return []
 

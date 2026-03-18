@@ -49,6 +49,11 @@ Two transports share the same runtime, runner, and presenter protocols. The tran
 - `loop.py` — WebSocket event loop with `ChatSessionStore` for resume
 - `parsing.py` — WebSocket events → typed messages
 - `backend.py` — `TransportBackend` entry point
+- `chat_prefs.py` — per-channel preferences storage (engine, trigger mode)
+- `trigger_mode.py` — @mention detection for bot invocation in group channels
+- `voice.py` — voice message transcription
+- `files.py` — file attachment download and auto-recognition
+- `commands.py` — slash command handling (`/help`, `/model`, `/trigger`, `/status`, `/cancel`, `/file`, `/new`)
 
 ### Telegram Transport (`src/tunapi/telegram/`)
 
@@ -58,15 +63,17 @@ The original transport from takopi. Uses long-polling, inline keyboard for cance
 
 Each subclasses `JsonlSubprocessRunner`: `claude.py`, `codex.py`, `gemini.py`, `opencode.py`, `pi.py`
 
+Gemini CLI engine supports auto model selection — the model is resolved automatically unless overridden in config.
+
 ### Plugin System (`plugins.py`)
 
 Entry-point groups in `pyproject.toml`:
-- `tunapi.engine_backends` — claude, codex, gemini, opencode, pi
+- `tunapi.engine_backends` — claude, codex, gemini (auto model), opencode, pi
 - `tunapi.transport_backends` — telegram, mattermost
 
 ### Configuration (`settings.py`, `config.py`)
 
-Pydantic settings from `~/.tunapi/tunapi.toml`. Env prefix: `TUNAPI__`. `MATTERMOST_TOKEN` env var supported for Mattermost token; `TELEGRAM_TOKEN` for Telegram. Per-project `chat_id` maps channels (Mattermost) or chats/topics (Telegram) to engines.
+Pydantic settings from `~/.tunapi/tunapi.toml`. Env prefix: `TUNAPI__`. `MATTERMOST_TOKEN` env var supported for Mattermost token; `TELEGRAM_TOKEN` for Telegram. Per-project `chat_id` maps channels (Mattermost) or chats/topics (Telegram) to engines. File transfer and voice transcription settings are configurable per transport. Agents cannot analyze images — image files are transferred but content analysis is not supported.
 
 ## Test Patterns
 

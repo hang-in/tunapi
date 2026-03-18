@@ -29,7 +29,14 @@ Forked from [takopi](https://github.com/banteg/takopi). The current fork focuses
 - **Session resume** — conversations persist across messages via resume tokens (`session_mode = "chat"`)
 - **Projects & worktrees** — bind channels to repos; mention a branch to run in a dedicated git worktree
 - **Cancel** — Mattermost: 🛑 reaction / Telegram: inline keyboard button
+- **File transfer** — auto-recognition of attachments, saved to the agent working directory
+- **Voice transcription** — voice messages converted to text and forwarded to the agent
+- **Trigger mode** — @mention detection for bot invocation (useful in group channels)
+- **Chat preferences** — per-channel engine/trigger mode storage (`/model`, `/trigger`)
+- **Slash commands** — `/help`, `/model`, `/trigger`, `/status`, `/cancel`, `/file`, `/new`
 - **Plugin system** — add engines, transports, or commands via Python entry points
+
+> **Note:** Agents cannot analyze images. Image files are transferred but content analysis is not supported.
 
 ### Requirements
 
@@ -96,7 +103,9 @@ bot_token = "123456:ABC-DEF..."
 chat_id = 123456789
 ```
 
-Telegram-only features: topics, voice notes, file transfer, forward coalescing, media groups, trigger mode, command menu, and persistent chat preferences.
+Telegram-only features: topics, forward coalescing, media groups.
+
+Both transports share: voice transcription, file transfer, trigger mode (@mention detection), slash commands, and persistent chat preferences.
 
 #### 3. Map channels to engines (optional)
 
@@ -154,14 +163,14 @@ tunapi --debug                            # debug mode
 | Cancel | 🛑 reaction | Inline button |
 | Channel-per-engine | ✅ | ✅ |
 | Config hot reload | ✅ | ✅ |
+| File transfer | ✅ | ✅ |
+| Voice transcription | ✅ | ✅ |
+| Trigger mode (@mention) | ✅ | ✅ |
+| Slash commands | ✅ | ✅ |
+| Chat preferences | ✅ | ✅ |
 | Topics / forums | — | ✅ |
-| Voice transcription | — | ✅ |
-| File transfer | — | ✅ |
 | Forward coalescing | — | ✅ |
 | Media groups | — | ✅ |
-| Trigger mode | — | ✅ |
-| Command menu | — | ✅ |
-| Chat preferences | — | ✅ |
 
 ### Plugins
 

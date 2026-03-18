@@ -397,7 +397,7 @@ async def handle_message(
     | None = None,
     progress_ref: MessageRef | None = None,
     clock: Callable[[], float] = time.monotonic,
-) -> None:
+) -> str | None:
     logger.info(
         "handle.incoming",
         channel_id=incoming.channel_id,
@@ -523,7 +523,7 @@ async def handle_message(
             delete_tag="error",
             thread_id=incoming.thread_id,
         )
-        return
+        return None
 
     if outcome.cancelled:
         resume = sync_resume_token(progress_tracker, outcome.resume)
@@ -553,7 +553,7 @@ async def handle_message(
             delete_tag="cancel",
             thread_id=incoming.thread_id,
         )
-        return
+        return None
 
     if outcome.completed is None:
         raise RuntimeError("runner finished without a completed event")
@@ -617,3 +617,4 @@ async def handle_message(
         delete_tag="final",
         thread_id=incoming.thread_id,
     )
+    return final_answer if run_ok is not False else None

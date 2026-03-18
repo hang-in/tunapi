@@ -65,6 +65,8 @@ async def handle_help(
         "| `!model <engine>` | Switch default engine |",
         "| `!trigger <all\\|mentions>` | Set trigger mode |",
         "| `!project list\\|set\\|info` | Manage project binding |",
+        "| `!persona add\\|list\\|remove` | Manage personas |",
+        "| `!rt \"주제\"` | Multi-agent roundtable |",
         "| `!file put` | Upload attached files to project |",
         "| `!file get <path>` | Download a file from project |",
         "| `!status` | Show current session info |",
@@ -263,6 +265,122 @@ async def handle_project(
     await send(RenderedMessage(
         text="Usage: `!project list` | `!project set <name>` | `!project info`"
     ))
+
+
+async def handle_persona(
+    args: str,
+    *,
+    chat_prefs: ChatPrefsStore | None,
+    send: Any,
+) -> None:
+    """Manage persona definitions (global)."""
+    if not chat_prefs:
+        await send(RenderedMessage(text="Persona storage unavailable."))
+        return
+
+    parts = args.strip().split(None, 1)
+    subcmd = parts[0].lower() if parts else ""
+    subargs = parts[1].strip() if len(parts) > 1 else ""
+
+    if subcmd == "add":
+        # !persona add <name> "prompt text"  or  !persona add <name> prompt text
+        add_parts = subargs.split(None, 1)
+        if len(add_parts) < 2:
+            await send(RenderedMessage(
+                text='Usage: `!persona add <name> "<prompt>"`'
+            ))
+            return
+        name = add_parts[0].lower()
+        prompt = add_parts[1].strip().strip('"').strip("'")
+        if not prompt:
+            await send(RenderedMessage(
+                text='Usage: `!persona add <name> "<prompt>"`'
+            ))
+            return
+        await chat_prefs.add_persona(name, prompt)
+        await send(RenderedMessage(text=f"Persona `{name}` added."))
+        logger.info("command.persona.add", name=name)
+        return
+
+    if subcmd == "list":
+        personas = await chat_prefs.list_personas()
+        if not personas:
+            await send(RenderedMessage(text="No personas defined. Use `!persona add <name> \"<prompt>\"`"))
+            return
+        lines = ["**Personas**", ""]
+        for name, p in sorted(personas.items()):
+            # Truncate long prompts for display
+            display = p.prompt if len(p.prompt) <= 80 else p.prompt[:77] + "..."
+            lines.append(f"- **{name}**: {display}")
+        await send(RenderedMessage(text="\n".join(lines)))
+        return
+
+    if subcmd == "remove":
+        name = subargs.strip().lower()
+        if not name:
+            await send(RenderedMessage(text="Usage: `!persona remove <name>`"))
+            return
+        removed = await chat_prefs.remove_persona(name)
+        if removed:
+            await send(RenderedMessage(text=f"Persona `{name}` removed."))
+            logger.info("command.persona.remove", name=name)
+        else:
+            await send(RenderedMessage(text=f"Persona `{name}` not found."))
+        return
+
+    if subcmd == "show":
+        name = subargs.strip().lower()
+        if not name:
+            await send(RenderedMessage(text="Usage: `!persona show <name>`"))
+            return
+        persona = await chat_prefs.get_persona(name)
+        if persona:
+            await send(RenderedMessage(text=f"**{persona.name}**\n\n{persona.prompt}"))
+        else:
+            await send(RenderedMessage(text=f"Persona `{name}` not found."))
+        return
+
+    # Default: show usage
+    await send(RenderedMessage(
+        text="Usage: `!persona add <name> \"<prompt>\"` | `!persona list` | `!persona show <name>` | `!persona remove <name>`"
+    ))
+
+
+async def handle_rt(
+    args: str,
+    *,
+    runtime: Any,
+    send: Any,
+    start_roundtable: Any,
+) -> None:
+    """Handle ``!rt "topic" [--rounds N]`` command."""
+    from .roundtable import parse_rt_args
+
+    rt_config = runtime.roundtable
+    rt_engines = list(rt_config.engines) or list(runtime.available_engine_ids())
+
+    if not rt_engines:
+        await send(RenderedMessage(text="⚠️ No engines available for roundtable."))
+        return
+
+    topic, rounds, error = parse_rt_args(args, rt_config)
+
+    if error:
+        await send(RenderedMessage(text=f"⚠️ {error}"))
+        return
+    if not topic:
+        engines_display = ", ".join(f"`{e}`" for e in rt_engines)
+        await send(RenderedMessage(
+            text=(
+                "**Roundtable** — 여러 에이전트의 의견을 순차 수집\n\n"
+                "Usage: `!rt \"주제\"` or `!rt \"주제\" --rounds 2`\n\n"
+                f"Engines: {engines_display}\n"
+                f"Default rounds: {rt_config.rounds} (max {rt_config.max_rounds})"
+            )
+        ))
+        return
+
+    await start_roundtable(topic, rounds, rt_engines)
 
 
 async def handle_cancel(

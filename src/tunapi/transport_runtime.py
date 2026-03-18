@@ -19,6 +19,15 @@ from .router import AutoRouter, EngineStatus
 from .runner import Runner
 from .worktrees import WorktreeError, resolve_run_cwd
 
+
+@dataclass(frozen=True, slots=True)
+class RoundtableConfig:
+    """Roundtable settings resolved from tunapi.toml."""
+
+    engines: tuple[str, ...]  # empty = all available
+    rounds: int = 1
+    max_rounds: int = 3
+
 type ContextSource = Literal[
     "reply_ctx",
     "directives",
@@ -54,6 +63,7 @@ class TransportRuntime:
         "_plugin_configs",
         "_watch_config",
         "_projects_root",
+        "_roundtable",
     )
 
     def __init__(
@@ -66,6 +76,7 @@ class TransportRuntime:
         plugin_configs: Mapping[str, Any] | None = None,
         watch_config: bool = False,
         projects_root: str | None = None,
+        roundtable: RoundtableConfig | None = None,
     ) -> None:
         self._apply(
             router=router,
@@ -76,6 +87,7 @@ class TransportRuntime:
             watch_config=watch_config,
         )
         self._projects_root = projects_root
+        self._roundtable = roundtable or RoundtableConfig(engines=())
 
     def update(
         self,
@@ -292,6 +304,10 @@ class TransportRuntime:
     def projects_root(self) -> str | None:
         return self._projects_root
 
+    @property
+    def roundtable(self) -> RoundtableConfig:
+        return self._roundtable
+
     def project_chat_ids(self) -> tuple[int, ...]:
         return self._projects.project_chat_ids()
 
@@ -319,8 +335,18 @@ class TransportRuntime:
     def resolve_run_cwd(self, context: RunContext | None) -> Path | None:
         try:
             return resolve_run_cwd(context, projects=self._projects)
-        except WorktreeError as exc:
-            raise ConfigError(str(exc)) from exc
+        except WorktreeError:
+            # Fallback: project may have been discovered from projects_root
+            # but not present in configured projects.
+            if (
+                context is not None
+                and context.project is not None
+                and self._projects_root is not None
+            ):
+                candidate = Path(self._projects_root).expanduser() / context.project
+                if candidate.is_dir():
+                    return candidate
+            raise
 
     def format_context_line(self, context: RunContext | None) -> str | None:
         return format_context_line(context, projects=self._projects)

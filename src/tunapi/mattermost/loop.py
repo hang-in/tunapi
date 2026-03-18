@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -11,19 +12,26 @@ import anyio
 from ..logging import bind_run_context, get_logger
 from ..model import ResumeToken
 from ..runner_bridge import IncomingMessage, handle_message
-from ..transport import MessageRef, RenderedMessage, SendOptions
+from ..transport import MessageRef, RenderedMessage
 from .bridge import CANCEL_EMOJI, MattermostBridgeConfig
 from .chat_prefs import ChatPrefsStore
 from .commands import (
     handle_cancel,
     handle_help,
     handle_model,
+    handle_persona,
     handle_project,
+    handle_rt,
     handle_status,
     handle_trigger,
     parse_command,
 )
-from .files import FilePutResult, handle_file_get, handle_file_put
+from .roundtable import (
+    RoundtableSession,
+    RoundtableStore,
+    run_roundtable,
+)
+from .files import handle_file_get, handle_file_put
 from .parsing import parse_ws_event
 from .trigger_mode import resolve_trigger_mode, should_trigger, strip_mention
 from .types import MattermostIncomingMessage, MattermostReactionEvent
@@ -70,9 +78,22 @@ async def _send_to_channel(
 async def _handle_cancel_reaction(
     reaction: MattermostReactionEvent,
     running_tasks: RunningTasks,
+    roundtables: RoundtableStore | None = None,
 ) -> None:
     if reaction.emoji_name != CANCEL_EMOJI:
         return
+    # Cancel roundtable session if 🛑 on header post
+    if roundtables:
+        session = roundtables.get(reaction.post_id)
+        if session is not None:
+            logger.info(
+                "roundtable.cancel_by_reaction",
+                thread_id=session.thread_id,
+                user_id=reaction.user_id,
+            )
+            session.cancel_event.set()
+            return
+    # Cancel running task
     for ref, task in list(running_tasks.items()):
         if str(ref.message_id) == reaction.post_id:
             logger.info(
@@ -207,14 +228,99 @@ async def _handle_file_command(
         return True
 
 
+_PERSONA_PREFIX_RE = re.compile(r"^@(\w+)\s+", re.UNICODE)
+
+
+async def _resolve_persona_prefix(
+    prompt: str, chat_prefs: ChatPrefsStore
+) -> str | None:
+    """If prompt starts with @persona_name, prepend the persona prompt.
+
+    Returns the modified prompt, or None if no persona prefix was found.
+    """
+    m = _PERSONA_PREFIX_RE.match(prompt)
+    if not m:
+        return None
+    name = m.group(1).lower()
+    persona = await chat_prefs.get_persona(name)
+    if persona is None:
+        return None
+    user_text = prompt[m.end():]
+    return f"[역할: {persona.name}]\n{persona.prompt}\n\n---\n\n{user_text}"
+
+
+async def _start_roundtable(
+    channel_id: str,
+    topic: str,
+    rounds: int,
+    engines: list[str],
+    *,
+    cfg: MattermostBridgeConfig,
+    running_tasks: RunningTasks,
+    chat_prefs: ChatPrefsStore | None,
+    roundtables: RoundtableStore,
+) -> None:
+    """Create a roundtable thread and run all rounds."""
+    engines_display = ", ".join(f"`{e}`" for e in engines)
+    rounds_display = f"{rounds} round{'s' if rounds > 1 else ''}"
+    header = (
+        f"**🔵 Roundtable**\n\n"
+        f"**Topic:** {topic}\n"
+        f"**Engines:** {engines_display} | **Rounds:** {rounds_display}\n\n"
+        f"---"
+    )
+    ref = await cfg.exec_cfg.transport.send(
+        channel_id=channel_id,
+        message=RenderedMessage(text=header),
+    )
+    if ref is None:
+        logger.error("roundtable.header_send_failed", channel_id=channel_id)
+        return
+
+    thread_id = str(ref.message_id)
+    session = RoundtableSession(
+        thread_id=thread_id,
+        channel_id=channel_id,
+        topic=topic,
+        engines=engines,
+        total_rounds=rounds,
+    )
+    roundtables.put(session)
+
+    # Resolve ambient context (channel-bound project)
+    ambient_context = None
+    if chat_prefs:
+        ambient_context = await chat_prefs.get_context(channel_id)
+
+    logger.info(
+        "roundtable.start",
+        thread_id=thread_id,
+        topic=topic,
+        engines=engines,
+        rounds=rounds,
+    )
+
+    try:
+        await run_roundtable(
+            session,
+            cfg=cfg,
+            chat_prefs=chat_prefs,
+            running_tasks=running_tasks,
+            ambient_context=ambient_context,
+        )
+    finally:
+        roundtables.remove(thread_id)
+
+
 async def _dispatch_message(
     msg: MattermostIncomingMessage,
     cfg: MattermostBridgeConfig,
     running_tasks: RunningTasks,
     sessions: ChatSessionStore,
     chat_prefs: ChatPrefsStore | None,
+    roundtables: RoundtableStore | None = None,
 ) -> None:
-    """Dispatch: slash commands → voice → trigger check → engine."""
+    """Dispatch: slash commands → roundtable → voice → trigger check → engine."""
     runtime = cfg.runtime
 
     # Helper to send a message to the channel
@@ -250,6 +356,23 @@ async def _dispatch_message(
                     runtime=runtime, chat_prefs=chat_prefs,
                     projects_root=cfg.projects_root,
                     send=send,
+                )
+                return
+            case "persona":
+                await handle_persona(
+                    args, chat_prefs=chat_prefs, send=send,
+                )
+                return
+            case "rt":
+                await handle_rt(
+                    args, runtime=runtime, send=send,
+                    start_roundtable=lambda topic, rounds, engines: _start_roundtable(
+                        msg.channel_id, topic, rounds, engines,
+                        cfg=cfg,
+                        running_tasks=running_tasks,
+                        chat_prefs=chat_prefs,
+                        roundtables=roundtables,
+                    ),
                 )
                 return
             case "status":
@@ -377,7 +500,16 @@ async def _dispatch_message(
         return
 
     context_line = runtime.format_context_line(context)
-    cwd = runtime.resolve_run_cwd(context)
+    try:
+        cwd = runtime.resolve_run_cwd(context)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "mattermost.resolve_cwd_error",
+            error=str(exc),
+            channel_id=msg.channel_id,
+        )
+        await send(RenderedMessage(text=f"⚠️ {exc}"))
+        return
     if cwd:
         bind_run_context(project=context.project if context else None)
 
@@ -393,10 +525,17 @@ async def _dispatch_message(
         reply_to = None
         thread_id = None
 
+    # -- Persona prompt prepend (@persona_name prefix) --
+    final_prompt = resolved.prompt
+    if chat_prefs and final_prompt:
+        persona_prompt = await _resolve_persona_prefix(final_prompt, chat_prefs)
+        if persona_prompt is not None:
+            final_prompt = persona_prompt
+
     incoming = IncomingMessage(
         channel_id=msg.channel_id,
         message_id=msg.post_id,
-        text=resolved.prompt,
+        text=final_prompt,
         reply_to=reply_to,
         thread_id=thread_id,
     )
@@ -441,6 +580,7 @@ async def run_main_loop(
     running_tasks: RunningTasks = {}
     sessions = ChatSessionStore()
     chat_prefs = ChatPrefsStore(_CONFIG_DIR / "mattermost_prefs.json")
+    roundtables = RoundtableStore()
 
     async with cfg.bot.websocket_events() as events:
         async with anyio.create_task_group() as tg:
@@ -455,7 +595,7 @@ async def run_main_loop(
                     continue
 
                 if isinstance(update, MattermostReactionEvent):
-                    await _handle_cancel_reaction(update, running_tasks)
+                    await _handle_cancel_reaction(update, running_tasks, roundtables)
                 elif isinstance(update, MattermostIncomingMessage):
                     if not update.text and not update.file_ids:
                         continue
@@ -468,5 +608,5 @@ async def run_main_loop(
                     )
                     tg.start_soon(
                         _dispatch_message, update, cfg, running_tasks,
-                        sessions, chat_prefs,
+                        sessions, chat_prefs, roundtables,
                     )

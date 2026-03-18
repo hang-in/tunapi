@@ -15,6 +15,13 @@ logger = get_logger(__name__)
 STATE_VERSION = 1
 
 
+class Persona(msgspec.Struct, forbid_unknown_fields=False):
+    """A reusable persona definition (global, not per-channel)."""
+
+    name: str
+    prompt: str
+
+
 class _ChatPrefs(msgspec.Struct, forbid_unknown_fields=False):
     default_engine: str | None = None
     trigger_mode: str | None = None  # "all" | "mentions"
@@ -25,6 +32,7 @@ class _ChatPrefs(msgspec.Struct, forbid_unknown_fields=False):
 class _State(msgspec.Struct, forbid_unknown_fields=False):
     version: int = STATE_VERSION
     chats: dict[str, _ChatPrefs] = msgspec.field(default_factory=dict)
+    personas: dict[str, Persona] = msgspec.field(default_factory=dict)
 
 
 _DECODER = msgspec.json.Decoder(_State)
@@ -132,3 +140,30 @@ class ChatPrefsStore:
             )
             self._set(channel_id, prefs)
             await self._save()
+
+    # -- Persona API (global, not per-channel) --
+
+    async def get_persona(self, name: str) -> Persona | None:
+        async with self._lock:
+            await self._load()
+            return self._state.personas.get(name)
+
+    async def list_personas(self) -> dict[str, Persona]:
+        async with self._lock:
+            await self._load()
+            return dict(self._state.personas)
+
+    async def add_persona(self, name: str, prompt: str) -> None:
+        async with self._lock:
+            await self._load()
+            self._state.personas[name] = Persona(name=name, prompt=prompt)
+            await self._save()
+
+    async def remove_persona(self, name: str) -> bool:
+        async with self._lock:
+            await self._load()
+            if name not in self._state.personas:
+                return False
+            del self._state.personas[name]
+            await self._save()
+            return True

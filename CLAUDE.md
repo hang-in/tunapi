@@ -53,7 +53,8 @@ Two transports share the same runtime, runner, and presenter protocols. The tran
 - `trigger_mode.py` — @mention detection for bot invocation in group channels
 - `voice.py` — voice message transcription
 - `files.py` — file attachment download and auto-recognition
-- `commands.py` — slash command handling (`/help`, `/model`, `/trigger`, `/status`, `/cancel`, `/file`, `/new`)
+- `commands.py` — slash command handling (`/help`, `/model`, `/trigger`, `/status`, `/cancel`, `/file`, `/new`, `/project`, `/persona`, `/rt`)
+- `roundtable.py` — multi-agent roundtable: sequential opinion collection with transcript context
 
 ### Telegram Transport (`src/tunapi/telegram/`)
 
@@ -73,7 +74,7 @@ Entry-point groups in `pyproject.toml`:
 
 ### Configuration (`settings.py`, `config.py`)
 
-Pydantic settings from `~/.tunapi/tunapi.toml`. Env prefix: `TUNAPI__`. `MATTERMOST_TOKEN` env var supported for Mattermost token; `TELEGRAM_TOKEN` for Telegram. Per-project `chat_id` maps channels (Mattermost) or chats/topics (Telegram) to engines. File transfer and voice transcription settings are configurable per transport. Agents cannot analyze images — image files are transferred but content analysis is not supported.
+Pydantic settings from `~/.tunapi/tunapi.toml`. Env prefix: `TUNAPI__`. `MATTERMOST_TOKEN` env var supported for Mattermost token; `TELEGRAM_TOKEN` for Telegram. Per-project `chat_id` maps channels (Mattermost) or chats/topics (Telegram) to engines. File transfer and voice transcription settings are configurable per transport. Agents cannot analyze images — image files are transferred but content analysis is not supported. `[roundtable]` section configures multi-agent roundtable (engines, rounds, max_rounds).
 
 ## Test Patterns
 

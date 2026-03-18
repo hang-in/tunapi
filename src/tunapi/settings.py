@@ -141,6 +141,14 @@ class MattermostVoiceSettings(BaseModel):
     api_key: NonEmptyStr | None = None
 
 
+class RoundtableSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    engines: list[NonEmptyStr] = Field(default_factory=list)
+    rounds: int = Field(default=1, ge=1)
+    max_rounds: int = Field(default=3, ge=1)
+
+
 class MattermostTransportSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -210,6 +218,7 @@ class TunapiSettings(BaseSettings):
     transports: TransportsSettings
 
     plugins: PluginsSettings = Field(default_factory=PluginsSettings)
+    roundtable: RoundtableSettings = Field(default_factory=RoundtableSettings)
 
     @model_validator(mode="before")
     @classmethod

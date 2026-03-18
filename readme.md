@@ -1,33 +1,49 @@
+<div align="center">
+
 # tunapi
 
-Mattermost and Telegram bridge for coding agent CLIs — run **Claude Code**, **Codex**, **Gemini CLI**, and more from any Mattermost channel or Telegram chat.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/downloads/)
+[![Tests](https://img.shields.io/github/actions/workflow/status/hang-in/tunapi/release.yml?label=tests)](https://github.com/hang-in/tunapi/actions)
+[![GitHub release](https://img.shields.io/github/v/release/hang-in/tunapi?include_prereleases)](https://github.com/hang-in/tunapi/releases)
 
-Forked from [takopi](https://github.com/banteg/takopi). The current fork focuses on Mattermost, while the Telegram transport from upstream is fully retained.
+Mattermost and Telegram bridge for coding agent CLIs
 
-## Features
+[**한국어**](#한국어) | [**English**](docs/README_EN.md) | [**日本語**](docs/README_JA.md)
 
-- **Two transports** — Mattermost (WebSocket, Bearer auth) and Telegram (long-polling, inline keyboard)
-- **Multi-engine** — Claude, Codex, Gemini, OpenCode, Pi. Map each channel/chat to a different engine
-- **Live progress** — stream tool calls, file changes, and elapsed time as the agent works
-- **Session resume** — conversations persist across messages via resume tokens (`session_mode = "chat"`)
-- **Projects & worktrees** — bind channels to repos; mention a branch to run in a dedicated git worktree
-- **Cancel** — Mattermost: add :stop_sign: reaction; Telegram: inline keyboard button
-- **Native Markdown** — Mattermost renders Markdown directly; Telegram uses HTML via sulguk
-- **Plugin system** — add engines, transports, or commands via Python entry points
+</div>
 
-## Requirements
+---
+
+## 한국어
+
+**Claude Code**, **Codex**, **Gemini CLI** 등 코딩 에이전트를 Mattermost 채널이나 Telegram 채팅에서 실행하세요.
+
+[takopi](https://github.com/banteg/takopi)에서 포크. 현재 포크의 초점은 Mattermost이며, upstream의 Telegram transport도 그대로 유지됩니다.
+
+### 주요 기능
+
+- **두 가지 트랜스포트** — Mattermost (WebSocket, Bearer 인증) + Telegram (long-polling, 인라인 키보드)
+- **멀티 엔진** — Claude, Codex, Gemini, OpenCode, Pi. 채널별로 다른 엔진 매핑
+- **실시간 진행 표시** — 도구 호출, 파일 변경, 경과 시간을 스트리밍
+- **세션 이어가기** — resume 토큰으로 대화 컨텍스트 유지 (`session_mode = "chat"`)
+- **프로젝트 & 워크트리** — 채널을 레포에 바인딩, 브랜치별 git worktree
+- **취소** — Mattermost: 🛑 반응 / Telegram: 인라인 버튼
+- **플러그인** — 엔진, 트랜스포트, 커맨드를 Python entry point로 추가
+
+### 요구사항
 
 - [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 - Python 3.14+ (`uv python install 3.14`)
-- At least one agent CLI on PATH: `claude`, `codex`, `gemini`, `opencode`, or `pi`
+- 에이전트 CLI 최소 1개: `claude`, `codex`, `gemini`, `opencode`, `pi`
 
-## Install
+### 설치
 
 ```sh
 uv tool install -U tunapi
 ```
 
-Or run from source:
+소스에서 설치:
 
 ```sh
 git clone https://github.com/hang-in/tunapi.git
@@ -35,21 +51,19 @@ cd tunapi
 uv tool install -e .
 ```
 
-## Setup
+### 설정
 
-### 1. Choose a transport
-
-Set `transport` in `~/.tunapi/tunapi.toml`:
-
-```toml
-transport = "mattermost"   # or "telegram"
-```
-
-### 2a. Mattermost setup
-
-Create a bot account in **System Console** → **Integrations** → **Bot Accounts** → **Add Bot Account**, then copy the **Access Token**.
+#### 1. 트랜스포트 선택
 
 `~/.tunapi/tunapi.toml`:
+
+```toml
+transport = "mattermost"   # 또는 "telegram"
+```
+
+#### 2a. Mattermost
+
+**System Console** → **Integrations** → **Bot Accounts** → **Add Bot Account**에서 봇을 만들고 Access Token을 복사하세요.
 
 ```toml
 transport = "mattermost"
@@ -57,135 +71,112 @@ default_engine = "claude"
 
 [transports.mattermost]
 url = "https://mm.example.com"
-token = "your-bot-access-token"
-channel_id = "default-channel-id"       # bot's DM or a channel ID
+token = "봇-액세스-토큰"
+channel_id = "기본-채널-id"
 show_resume_line = false
-session_mode = "chat"                   # "stateless" or "chat"
+session_mode = "chat"
 ```
 
-Or use a `.env` file for the token:
+`.env`로 토큰 관리:
 
 ```sh
-# .env or ~/.tunapi/.env
-MATTERMOST_TOKEN=your-bot-access-token
+MATTERMOST_TOKEN=봇-액세스-토큰
 ```
 
-### 2b. Telegram setup
+#### 2b. Telegram
 
-Create a bot via [@BotFather](https://t.me/BotFather) and copy the token.
-
-`~/.tunapi/tunapi.toml`:
+[@BotFather](https://t.me/BotFather)에서 봇을 만들고 토큰을 복사하세요.
 
 ```toml
 transport = "telegram"
 default_engine = "claude"
 
 [transports.telegram]
-token = "123456:ABC-DEF..."
-chat_id = 123456789                     # your chat or group ID
+bot_token = "123456:ABC-DEF..."
+chat_id = 123456789
 ```
 
-Or use a `.env` file:
+Telegram 전용 기능: 토픽, 음성 메모, 파일 전송, 포워드 합치기, 미디어 그룹, 트리거 모드, 커맨드 메뉴, 채팅 설정 저장
 
-```sh
-# .env or ~/.tunapi/.env
-TELEGRAM_TOKEN=123456:ABC-DEF...
-```
-
-Telegram has additional features not yet available in Mattermost: topics, voice notes, file transfer, forward coalescing, media groups, trigger mode, command menu, and persistent chat preferences.
-
-### 3. Map channels to engines (optional)
-
-Channel-per-engine mapping works with both transports. Use the Mattermost channel ID or Telegram chat/topic ID as `chat_id`:
+#### 3. 채널별 엔진 매핑 (선택)
 
 ```toml
 [projects.backend]
 path = "/home/user/projects/backend"
 default_engine = "claude"
-chat_id = "claude-channel-id"
+chat_id = "claude-채널-id"
 
 [projects.infra]
 path = "/home/user/projects/infra"
 default_engine = "codex"
-chat_id = "codex-channel-id"
+chat_id = "codex-채널-id"
 
 [projects.research]
 path = "/home/user/projects/research"
 default_engine = "gemini"
-chat_id = "gemini-channel-id"
+chat_id = "gemini-채널-id"
 ```
 
-## Usage
+### 사용법
 
 ```sh
-# Run in foreground
-tunapi
-
-# Run in background
-nohup tunapi > /tmp/tunapi.log 2>&1 &
-
-# Debug mode
-tunapi --debug
+tunapi                                    # 포그라운드 실행
+nohup tunapi > /tmp/tunapi.log 2>&1 &    # 백그라운드 실행
+tunapi --debug                            # 디버그 모드
 ```
 
-Send a message in any mapped channel. The bot will run the configured engine and reply.
+| 동작 | 방법 |
+|------|------|
+| 엔진 선택 | `/claude`, `/codex`, `/gemini` 접두사 |
+| 프로젝트 등록 | `tunapi init my-project` |
+| 프로젝트 지정 | `/my-project 버그 고쳐줘` |
+| 워크트리 사용 | `/my-project @feat/branch 작업해줘` |
+| 새 세션 시작 | `/new` |
+| 실행 취소 | 🛑 반응 (Mattermost) / Cancel 버튼 (Telegram) |
+| 설정 확인 | `tunapi config list` |
 
-| Action | How |
-|--------|-----|
-| Pick an engine | `/claude`, `/codex`, `/gemini` prefix |
-| Register a project | `tunapi init my-project` |
-| Target a project | `/my-project fix the bug` |
-| Use a worktree | `/my-project @feat/branch do something` |
-| Start a new session | `/new` |
-| Cancel a running task | React with :stop_sign: (Mattermost) or tap Cancel (Telegram) |
-| View config | `tunapi config list` |
+### 지원 엔진
 
-## Supported Engines
+| 엔진 | CLI | 상태 |
+|------|-----|------|
+| Claude Code | `claude` | 내장 |
+| Codex | `codex` | 내장 |
+| Gemini CLI | `gemini` | 내장 |
+| OpenCode | `opencode` | 내장 |
+| Pi | `pi` | 내장 |
 
-| Engine | CLI | Status |
-|--------|-----|--------|
-| Claude Code | `claude` | Built-in |
-| Codex | `codex` | Built-in |
-| Gemini CLI | `gemini` | Built-in |
-| OpenCode | `opencode` | Built-in |
-| Pi | `pi` | Built-in |
+### 트랜스포트 기능 비교
 
-## Transport Feature Matrix
+| 기능 | Mattermost | Telegram |
+|------|------------|----------|
+| 세션 이어가기 | ✅ | ✅ |
+| 실시간 진행 표시 | ✅ | ✅ |
+| 취소 | 🛑 반응 | 인라인 버튼 |
+| 채널별 엔진 | ✅ | ✅ |
+| Config 핫 리로드 | ✅ | ✅ |
+| 토픽 / 포럼 | — | ✅ |
+| 음성 전사 | — | ✅ |
+| 파일 전송 | — | ✅ |
+| 포워드 합치기 | — | ✅ |
+| 미디어 그룹 | — | ✅ |
+| 트리거 모드 | — | ✅ |
+| 커맨드 메뉴 | — | ✅ |
+| 채팅 설정 저장 | — | ✅ |
 
-Both transports share the core engine/runner/presenter pipeline. Feature differences:
+### 플러그인
 
-| Feature | Mattermost | Telegram |
-|---------|------------|----------|
-| Session resume | Yes | Yes |
-| Live progress | Yes | Yes |
-| Cancel | 🛑 reaction | Inline button |
-| Channel-per-engine | Yes | Yes |
-| Config hot reload | Yes | Yes |
-| Topics / forums | — | Yes |
-| Voice transcription | — | Yes |
-| File transfer | — | Yes |
-| Forward coalescing | — | Yes |
-| Media groups | — | Yes |
-| Trigger mode | — | Yes |
-| Command menu | — | Yes |
-| Chat preferences | — | Yes |
+엔진, 트랜스포트, 커맨드를 entry-point 플러그인으로 추가할 수 있습니다.
 
-## Plugins
+[`docs/how-to/write-a-plugin.md`](docs/how-to/write-a-plugin.md) / [`docs/reference/plugin-api.md`](docs/reference/plugin-api.md)
 
-tunapi supports entry-point plugins for engines, transports, and commands.
-
-See [`docs/how-to/write-a-plugin.md`](docs/how-to/write-a-plugin.md) and [`docs/reference/plugin-api.md`](docs/reference/plugin-api.md).
-
-## Development
+### 개발
 
 ```sh
 uv sync --dev
-just check          # format + lint + typecheck + tests
-uv run pytest --no-cov -k "test_name"   # single test
+just check                              # format + lint + typecheck + tests
+uv run pytest --no-cov -k "test_name"   # 단일 테스트
 ```
 
-See [`docs/reference/specification.md`](docs/reference/specification.md).
+### 라이선스
 
-## License
-
-MIT — see [LICENSE](LICENSE).
+MIT — [LICENSE](LICENSE)

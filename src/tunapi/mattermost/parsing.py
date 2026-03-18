@@ -76,6 +76,7 @@ def parse_posted_event(
         sender_id=post.user_id,
         sender_username=sender_name.lstrip("@"),
         channel_type=channel_type,
+        file_ids=tuple(post.file_ids),
         raw=post_json,
     )
 

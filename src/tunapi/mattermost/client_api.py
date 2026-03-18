@@ -298,6 +298,12 @@ class HttpMattermostClient:
     # Files
     # ------------------------------------------------------------------
 
+    async def get_file_info(self, file_id: str) -> FileInfo | None:
+        result = await self._get(f"/files/{file_id}/info")
+        return self._decode_result(
+            method="get_file_info", payload=result, model=FileInfo
+        )
+
     async def upload_file(
         self,
         channel_id: str,

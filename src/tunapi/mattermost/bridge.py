@@ -202,6 +202,7 @@ class MattermostTransport:
 class MattermostBridgeConfig:
     bot: MattermostClient
     bot_user_id: str
+    bot_username: str
     runtime: TransportRuntime
     channel_id: str
     startup_msg: str
@@ -211,3 +212,14 @@ class MattermostBridgeConfig:
     allowed_channel_ids: tuple[str, ...] = ()
     allowed_user_ids: tuple[str, ...] = ()
     message_overflow: str = "trim"
+    trigger_mode: str = "all"
+    files_enabled: bool = False
+    files_uploads_dir: str = "incoming"
+    files_deny_globs: tuple[str, ...] = (".git/**", ".env", ".envrc", "*.pem", ".ssh/**")
+    files_max_upload_bytes: int = 20 * 1024 * 1024
+    files_max_download_bytes: int = 50 * 1024 * 1024
+    voice_enabled: bool = False
+    voice_max_bytes: int = 10 * 1024 * 1024
+    voice_model: str = "gpt-4o-mini-transcribe"
+    voice_base_url: str | None = None
+    voice_api_key: str | None = None

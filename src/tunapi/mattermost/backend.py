@@ -96,6 +96,10 @@ class MattermostBackend(TransportBackend):
         message_overflow = transport_config.get("message_overflow", "trim")
         allowed_channel_ids = tuple(transport_config.get("allowed_channel_ids", []))
         allowed_user_ids = tuple(transport_config.get("allowed_user_ids", []))
+        trigger_mode = transport_config.get("trigger_mode", "all")
+
+        files_cfg = transport_config.get("files", {})
+        voice_cfg = transport_config.get("voice", {})
 
         startup_msg = _build_startup_message(
             runtime,
@@ -119,12 +123,14 @@ class MattermostBackend(TransportBackend):
         async def run_loop() -> None:
             me = await bot.get_me()
             bot_user_id = me.id if me else ""
+            bot_username = me.username if me else ""
             if not bot_user_id:
                 logger.warning("mattermost.no_bot_user_id")
 
             cfg = MattermostBridgeConfig(
                 bot=bot,
                 bot_user_id=bot_user_id,
+                bot_username=bot_username,
                 runtime=runtime,
                 channel_id=channel_id,
                 startup_msg=startup_msg,
@@ -134,6 +140,17 @@ class MattermostBackend(TransportBackend):
                 allowed_channel_ids=allowed_channel_ids,
                 allowed_user_ids=allowed_user_ids,
                 message_overflow=message_overflow,
+                trigger_mode=trigger_mode,
+                files_enabled=files_cfg.get("enabled", False),
+                files_uploads_dir=files_cfg.get("uploads_dir", "incoming"),
+                files_deny_globs=tuple(files_cfg.get("deny_globs", [".git/**", ".env", ".envrc", "*.pem", ".ssh/**"])),
+                files_max_upload_bytes=files_cfg.get("max_upload_bytes", 20 * 1024 * 1024),
+                files_max_download_bytes=files_cfg.get("max_download_bytes", 50 * 1024 * 1024),
+                voice_enabled=voice_cfg.get("enabled", False),
+                voice_max_bytes=voice_cfg.get("max_bytes", 10 * 1024 * 1024),
+                voice_model=voice_cfg.get("model", "gpt-4o-mini-transcribe"),
+                voice_base_url=voice_cfg.get("base_url"),
+                voice_api_key=voice_cfg.get("api_key"),
             )
 
             from .loop import run_main_loop

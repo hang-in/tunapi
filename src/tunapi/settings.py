@@ -119,6 +119,28 @@ class TelegramTransportSettings(BaseModel):
     files: TelegramFilesSettings = Field(default_factory=TelegramFilesSettings)
 
 
+class MattermostFilesSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    enabled: bool = False
+    uploads_dir: NonEmptyStr = "incoming"
+    max_upload_bytes: StrictInt = 20 * 1024 * 1024
+    max_download_bytes: StrictInt = 50 * 1024 * 1024
+    deny_globs: list[NonEmptyStr] = Field(
+        default_factory=lambda: [".git/**", ".env", ".envrc", "*.pem", ".ssh/**"]
+    )
+
+
+class MattermostVoiceSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    enabled: bool = False
+    max_bytes: StrictInt = 10 * 1024 * 1024
+    model: NonEmptyStr = "gpt-4o-mini-transcribe"
+    base_url: NonEmptyStr | None = None
+    api_key: NonEmptyStr | None = None
+
+
 class MattermostTransportSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -130,6 +152,9 @@ class MattermostTransportSettings(BaseModel):
     session_mode: Literal["stateless", "chat"] = "stateless"
     show_resume_line: bool = True
     message_overflow: Literal["trim", "split"] = "trim"
+    trigger_mode: Literal["all", "mentions"] = "all"
+    files: MattermostFilesSettings = Field(default_factory=MattermostFilesSettings)
+    voice: MattermostVoiceSettings = Field(default_factory=MattermostVoiceSettings)
 
     @model_validator(mode="before")
     @classmethod

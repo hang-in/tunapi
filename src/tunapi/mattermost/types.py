@@ -7,6 +7,14 @@ from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
+class MattermostFileAttachment:
+    file_id: str
+    name: str = ""
+    size: int = 0
+    mime_type: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class MattermostIncomingMessage:
     transport: str = "mattermost"
     channel_id: str = ""
@@ -16,6 +24,7 @@ class MattermostIncomingMessage:
     sender_id: str = ""
     sender_username: str = ""
     channel_type: str = ""  # "O", "P", "D", "G"
+    file_ids: tuple[str, ...] = ()
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property

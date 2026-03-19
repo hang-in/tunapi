@@ -146,9 +146,7 @@ async def _doctor_mattermost_checks(
             checks.append(
                 DoctorCheck("mattermost token", "error", "failed to fetch user info")
             )
-            checks.append(
-                DoctorCheck("channel_id", "error", "skipped (token invalid)")
-            )
+            checks.append(DoctorCheck("channel_id", "error", "skipped (token invalid)"))
             return checks
         user_label = f"@{me.username}" if me.username else f"id={me.id}"
         checks.append(DoctorCheck("mattermost token", "ok", user_label))
@@ -159,12 +157,115 @@ async def _doctor_mattermost_checks(
                     DoctorCheck("channel_id", "error", f"unreachable ({channel_id})")
                 )
             else:
-                name = getattr(channel, "display_name", None) or getattr(channel, "name", channel_id)
+                name = getattr(channel, "display_name", None) or getattr(
+                    channel, "name", channel_id
+                )
                 checks.append(DoctorCheck("channel_id", "ok", str(name)))
         else:
-            checks.append(DoctorCheck("channel_id", "ok", "not set (using allowed_channel_ids)"))
+            checks.append(
+                DoctorCheck("channel_id", "ok", "not set (using allowed_channel_ids)")
+            )
     except Exception as exc:  # noqa: BLE001
         checks.append(DoctorCheck("mattermost", "error", str(exc)))
+    finally:
+        await client.close()
+    return checks
+
+
+async def _doctor_slack_checks(
+    bot_token: str,
+    app_token: str,
+    channel_id: str,
+    allowed_channel_ids: tuple[str, ...] = (),
+) -> list[DoctorCheck]:
+    from ..slack.client import SlackClient
+    from ..slack.client_api import HttpSlackClient
+
+    checks: list[DoctorCheck] = []
+    if not bot_token:
+        checks.append(DoctorCheck("slack bot token", "error", "bot_token missing"))
+        return checks
+    if not app_token:
+        checks.append(DoctorCheck("slack app token", "error", "app_token missing"))
+        return checks
+
+    client = SlackClient(bot_token, app_token)
+    try:
+        # 1. Bot token validation
+        me = await client.auth_test()
+        if not me.ok:
+            checks.append(
+                DoctorCheck("slack bot token", "error", f"invalid ({me.error})")
+            )
+            checks.append(DoctorCheck("channel_id", "error", "skipped (token invalid)"))
+            checks.append(
+                DoctorCheck("socket mode", "error", "skipped (token invalid)")
+            )
+            return checks
+        user_label = f"@{me.user}" if me.user else f"id={me.user_id}"
+        checks.append(DoctorCheck("slack bot token", "ok", user_label))
+
+        # 2. Channel validation
+        if channel_id:
+            channel = await client.get_channel(channel_id)
+            if channel is None:
+                checks.append(
+                    DoctorCheck("channel_id", "error", f"unreachable ({channel_id})")
+                )
+            else:
+                name = getattr(channel, "name", channel_id)
+                checks.append(DoctorCheck("channel_id", "ok", f"#{name}"))
+        elif allowed_channel_ids:
+            checks.append(
+                DoctorCheck(
+                    "channel_id",
+                    "warning",
+                    "channel_id not set — startup/restart notifications will be skipped",
+                )
+            )
+        else:
+            checks.append(
+                DoctorCheck(
+                    "channel_id",
+                    "error",
+                    "channel_id not set and allowed_channel_ids is empty",
+                )
+            )
+
+        # 3. Socket Mode readiness (app token + apps.connections.open)
+        try:
+            raw_client = HttpSlackClient(bot_token, app_token)
+            try:
+                url = await raw_client.apps_connections_open()
+                if url:
+                    checks.append(
+                        DoctorCheck("socket mode", "ok", "connection available")
+                    )
+                else:
+                    checks.append(
+                        DoctorCheck(
+                            "socket mode",
+                            "error",
+                            "apps.connections.open returned no URL "
+                            "(check Socket Mode is enabled in Slack app settings)",
+                        )
+                    )
+            finally:
+                await raw_client.close()
+        except Exception as exc:  # noqa: BLE001
+            error_str = str(exc)
+            if "invalid_auth" in error_str or "not_authed" in error_str:
+                detail = "invalid app_token"
+            elif "not_allowed_token_type" in error_str:
+                detail = (
+                    "app_token must be an xapp- token (Socket Mode app-level token)"
+                )
+            else:
+                detail = error_str[:120]
+            checks.append(DoctorCheck("socket mode", "error", detail))
+
+    except Exception as exc:  # noqa: BLE001
+        checks.append(DoctorCheck("slack", "error", str(exc)))
     finally:
         await client.close()
     return checks
@@ -189,6 +290,10 @@ def run_doctor(
     mm_voice_checks: Callable[
         [MattermostTransportSettings], list[DoctorCheck]
     ] = _doctor_mm_voice_checks,
+    slack_checks: Callable[
+        [str, str, str, tuple[str, ...]],
+        Awaitable[list[DoctorCheck]],
+    ] = _doctor_slack_checks,
 ) -> None:
     try:
         settings, config_path = load_settings_fn()
@@ -196,9 +301,9 @@ def run_doctor(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
-    if settings.transport not in ("telegram", "mattermost"):
+    if settings.transport not in ("telegram", "mattermost", "slack"):
         typer.echo(
-            "error: tunapi doctor currently supports the telegram and mattermost transports only.",
+            "error: tunapi doctor currently supports the telegram, mattermost and slack transports only.",
             err=True,
         )
         raise typer.Exit(code=1)
@@ -264,6 +369,23 @@ def run_doctor(
             *mm_file_checks(mm),
             *mm_voice_checks(mm),
         ]
+
+    elif settings.transport == "slack":
+        sl = settings.transports.slack
+        if sl is None:
+            typer.echo(
+                f"error: Missing [transports.slack] in {config_path}.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+        checks = anyio.run(
+            slack_checks,
+            sl.bot_token,
+            sl.app_token,
+            sl.channel_id,
+            tuple(sl.allowed_channel_ids),
+        )
 
     typer.echo("tunapi doctor")
     for check in checks:

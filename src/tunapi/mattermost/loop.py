@@ -641,6 +641,10 @@ async def _run_engine(
     if effective_resume is None and journal is not None and final_prompt:
         with contextlib.suppress(Exception):
             j_entries = await journal.recent_entries(msg.channel_id, limit=50)
+            # Cross-transport fallback: if no entries for this channel,
+            # check all channels for recent work
+            if not j_entries:
+                j_entries = await journal.recent_entries_global(limit=30)
             if j_entries:
                 preamble = build_handoff_preamble(
                     j_entries,

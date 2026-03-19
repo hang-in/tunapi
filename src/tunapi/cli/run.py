@@ -55,7 +55,9 @@ def _resolve_transport_id(override: str | None) -> str:
     return raw.strip()
 
 
-def acquire_config_lock(config_path: Path, token: str | None) -> LockHandle:
+def acquire_config_lock(
+    config_path: Path, token: str | None, transport_id: str | None = None
+) -> LockHandle:
     fingerprint = token_fingerprint(token) if token else None
     acquire_lock_fn = cast(
         Callable[..., LockHandle],
@@ -65,6 +67,7 @@ def acquire_config_lock(config_path: Path, token: str | None) -> LockHandle:
         return acquire_lock_fn(
             config_path=config_path,
             token_fingerprint=fingerprint,
+            transport_id=transport_id,
         )
     except LockError as exc:
         lines = str(exc).splitlines()
@@ -299,7 +302,9 @@ def _run_auto_router(
             transport_config=transport_config,
             _config_path=config_path,
         )
-        lock_handle = acquire_config_lock_fn(config_path, lock_token)
+        lock_handle = acquire_config_lock_fn(
+            config_path, lock_token, settings.transport
+        )
         runtime = spec.to_runtime(config_path=config_path)
         transport_backend.build_and_run(
             final_notify=final_notify,

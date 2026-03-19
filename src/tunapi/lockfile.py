@@ -56,15 +56,22 @@ def token_fingerprint(token: str) -> str:
     return digest[:10]
 
 
-def lock_path_for_config(config_path: Path) -> Path:
+def lock_path_for_config(
+    config_path: Path, *, transport_id: str | None = None
+) -> Path:
+    if transport_id:
+        return config_path.with_suffix(f".{transport_id}.lock")
     return config_path.with_suffix(".lock")
 
 
 def acquire_lock(
-    *, config_path: Path, token_fingerprint: str | None = None
+    *,
+    config_path: Path,
+    token_fingerprint: str | None = None,
+    transport_id: str | None = None,
 ) -> LockHandle:
     cfg_path = config_path.expanduser().resolve()
-    lock_path = lock_path_for_config(cfg_path)
+    lock_path = lock_path_for_config(cfg_path, transport_id=transport_id)
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         existing = _read_lock_info(lock_path)

@@ -131,6 +131,34 @@ class Journal:
             )
             return []
 
+    async def recent_entries_global(self, *, limit: int = 50) -> list[JournalEntry]:
+        """Load the most recent entries across ALL channels.
+
+        Used for cross-transport handoff: when the current channel has no
+        journal entries, fall back to the most recent work from any channel.
+        """
+        all_entries: list[JournalEntry] = []
+        try:
+            for path in sorted(self._base_dir.glob("*.jsonl")):
+                try:
+                    async with await anyio.open_file(path, "rb") as f:
+                        lines = await f.readlines()
+                    for raw_line in lines[-limit:]:
+                        raw_line = raw_line.strip()
+                        if not raw_line:
+                            continue
+                        with contextlib.suppress(Exception):
+                            all_entries.append(_decoder.decode(raw_line))
+                except Exception:  # noqa: BLE001
+                    continue
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("journal.global_read_failed", error=str(exc))
+            return []
+
+        # Sort by timestamp and return the most recent
+        all_entries.sort(key=lambda e: e.timestamp)
+        return all_entries[-limit:]
+
     async def last_run(self, channel_id: str) -> list[JournalEntry] | None:
         """Return all entries for the most recent run_id."""
         entries = await self.recent_entries(channel_id, limit=200)

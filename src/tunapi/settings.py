@@ -149,6 +149,61 @@ class RoundtableSettings(BaseModel):
     max_rounds: int = Field(default=3, ge=1)
 
 
+class SlackFilesSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    enabled: bool = False
+    uploads_dir: NonEmptyStr = "incoming"
+    max_upload_bytes: StrictInt = 20 * 1024 * 1024
+    max_download_bytes: StrictInt = 50 * 1024 * 1024
+    deny_globs: list[NonEmptyStr] = Field(
+        default_factory=lambda: [".git/**", ".env", ".envrc", "*.pem", ".ssh/**"]
+    )
+
+
+class SlackVoiceSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    enabled: bool = False
+    max_bytes: StrictInt = 10 * 1024 * 1024
+    model: NonEmptyStr = "gpt-4o-mini-transcribe"
+    base_url: NonEmptyStr | None = None
+    api_key: NonEmptyStr | None = None
+
+
+class SlackTransportSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    bot_token: NonEmptyStr = ""
+    app_token: NonEmptyStr = ""
+    channel_id: NonEmptyStr = ""
+    allowed_channel_ids: list[NonEmptyStr] = Field(default_factory=list)
+    allowed_user_ids: list[NonEmptyStr] = Field(default_factory=list)
+    session_mode: Literal["stateless", "chat"] = "stateless"
+    show_resume_line: bool = True
+    message_overflow: Literal["trim", "split"] = "trim"
+    trigger_mode: Literal["all", "mentions"] = "mentions"
+    files: SlackFilesSettings = Field(default_factory=SlackFilesSettings)
+    voice: SlackVoiceSettings = Field(default_factory=SlackVoiceSettings)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_tokens_from_env(cls, data: Any) -> Any:
+        """Allow tokens to be set via SLACK_BOT_TOKEN and SLACK_APP_TOKEN env vars."""
+        if isinstance(data, dict):
+            import os
+
+            if not data.get("bot_token"):
+                env_token = os.environ.get("SLACK_BOT_TOKEN", "")
+                if env_token:
+                    data["bot_token"] = env_token
+            if not data.get("app_token"):
+                env_token = os.environ.get("SLACK_APP_TOKEN", "")
+                if env_token:
+                    data["app_token"] = env_token
+        return data
+
+
 class MattermostTransportSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -180,6 +235,7 @@ class MattermostTransportSettings(BaseModel):
 class TransportsSettings(BaseModel):
     telegram: TelegramTransportSettings | None = None
     mattermost: MattermostTransportSettings | None = None
+    slack: SlackTransportSettings | None = None
 
     model_config = ConfigDict(extra="allow")
 
@@ -269,6 +325,10 @@ class TunapiSettings(BaseSettings):
             if self.transports.mattermost is None:
                 raise ConfigError(f"Missing [transports.mattermost] in {config_path}.")
             return self.transports.mattermost.model_dump()
+        if transport_id == "slack":
+            if self.transports.slack is None:
+                raise ConfigError(f"Missing [transports.slack] in {config_path}.")
+            return self.transports.slack.model_dump()
         extra = self.transports.model_extra or {}
         raw = extra.get(transport_id)
         if raw is None:
@@ -293,6 +353,10 @@ class TunapiSettings(BaseSettings):
         mm = self.transports.mattermost
         if mm is not None and mm.channel_id:
             default_chat_id = mm.channel_id
+
+        sl = self.transports.slack
+        if sl is not None and sl.channel_id:
+            default_chat_id = sl.channel_id
 
         reserved_lower = {value.lower() for value in reserved}
         engine_map = {engine.lower(): engine for engine in engine_ids}

@@ -703,8 +703,7 @@ async def run_main_loop(
     chat_prefs = ChatPrefsStore(_CONFIG_DIR / "mattermost_prefs.json")
     roundtables = RoundtableStore()
 
-    async with cfg.bot.websocket_events() as events:
-        async with anyio.create_task_group() as tg:
+    async with cfg.bot.websocket_events() as events, anyio.create_task_group() as tg:
             async for ws_event in events:
                 update = parse_ws_event(
                     ws_event,

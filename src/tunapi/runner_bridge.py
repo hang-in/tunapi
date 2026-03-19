@@ -204,10 +204,11 @@ class ProgressEdits:
     async def _run_progress_loop(self) -> None:
         while True:
             while self.rendered_seq == self.event_seq:
-                try:
-                    await self.signal_recv.receive()
-                except anyio.EndOfStream:
-                    return
+                with anyio.move_on_after(5.0):
+                    try:
+                        await self.signal_recv.receive()
+                    except anyio.EndOfStream:
+                        return
 
             seq_at_render = self.event_seq
             now = self.clock()

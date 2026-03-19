@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -310,142 +311,153 @@ async def _start_roundtable(
         roundtables.complete(thread_id)
 
 
-async def _dispatch_message(
+@dataclass(slots=True)
+class _ResolvedPrompt:
+    """Result of prompt resolution before engine dispatch."""
+
+    text: str
+    file_context: str  # empty string if no files
+
+
+async def _try_dispatch_command(
     msg: MattermostIncomingMessage,
     cfg: MattermostBridgeConfig,
     running_tasks: RunningTasks,
     sessions: ChatSessionStore,
     chat_prefs: ChatPrefsStore | None,
-    roundtables: RoundtableStore | None = None,
-) -> None:
-    """Dispatch: slash commands → roundtable → voice → trigger check → engine."""
-    # Error boundary policy:
-    # - Runner unavailable (resolve_runner.issue): warn user via message, return
-    # - CWD resolution failure: warn user via message, return
-    # - handle_message() failure: log only (no user message) — the bridge
-    #   layer already sends error/timeout indicators
-    # - Command handler errors: propagate (crash = bug in our code)
+    roundtables: RoundtableStore | None,
+) -> bool:
+    """Handle slash/bang commands. Returns True if a command was dispatched."""
+    cmd, args = parse_command(msg.text)
+    if cmd is None:
+        return False
+
     runtime = cfg.runtime
 
-    # Helper to send a message to the channel
     async def send(message: RenderedMessage) -> None:
         await _send_to_channel(cfg, msg.channel_id, message)
 
-    # -- Commands (supports both /command and !command) --
-    cmd, args = parse_command(msg.text)
-    if cmd is not None:
-        match cmd:
-            case "new":
-                await sessions.clear(msg.channel_id)
-                await send(RenderedMessage(text="새 대화를 시작합니다."))
-                return
-            case "help":
-                await handle_help(runtime=runtime, send=send)
-                return
-            case "model":
-                await handle_model(
-                    args,
-                    channel_id=msg.channel_id,
-                    runtime=runtime,
-                    chat_prefs=chat_prefs,
-                    send=send,
+    match cmd:
+        case "new":
+            await sessions.clear(msg.channel_id)
+            await send(RenderedMessage(text="새 대화를 시작합니다."))
+        case "help":
+            await handle_help(runtime=runtime, send=send)
+        case "model":
+            await handle_model(
+                args,
+                channel_id=msg.channel_id,
+                runtime=runtime,
+                chat_prefs=chat_prefs,
+                send=send,
+            )
+        case "trigger":
+            await handle_trigger(
+                args,
+                channel_id=msg.channel_id,
+                chat_prefs=chat_prefs,
+                send=send,
+            )
+        case "project":
+            await handle_project(
+                args,
+                channel_id=msg.channel_id,
+                runtime=runtime,
+                chat_prefs=chat_prefs,
+                projects_root=cfg.projects_root,
+                send=send,
+            )
+        case "persona":
+            await handle_persona(
+                args,
+                chat_prefs=chat_prefs,
+                send=send,
+            )
+        case "rt":
+            _continue_rt = None
+            if (
+                msg.root_id
+                and roundtables
+                and roundtables.get_completed(msg.root_id)
+            ):
+                _completed_session = roundtables.get_completed(msg.root_id)
+                _ambient_ctx = (
+                    await chat_prefs.get_context(msg.channel_id)
+                    if chat_prefs
+                    else None
                 )
-                return
-            case "trigger":
-                await handle_trigger(
-                    args,
-                    channel_id=msg.channel_id,
-                    chat_prefs=chat_prefs,
-                    send=send,
-                )
-                return
-            case "project":
-                await handle_project(
-                    args,
-                    channel_id=msg.channel_id,
-                    runtime=runtime,
-                    chat_prefs=chat_prefs,
-                    projects_root=cfg.projects_root,
-                    send=send,
-                )
-                return
-            case "persona":
-                await handle_persona(
-                    args,
-                    chat_prefs=chat_prefs,
-                    send=send,
-                )
-                return
-            case "rt":
-                # Build continue_roundtable callback if in a completed RT thread
-                _continue_rt = None
-                if (
-                    msg.root_id
-                    and roundtables
-                    and roundtables.get_completed(msg.root_id)
-                ):
-                    _completed_session = roundtables.get_completed(msg.root_id)
-                    _ambient_ctx = (
-                        await chat_prefs.get_context(msg.channel_id)
-                        if chat_prefs
-                        else None
-                    )
 
-                    async def _continue_rt(
-                        topic: str,
-                        engines_filter: list[str] | None,
-                        *,
-                        _s: Any = _completed_session,
-                        _ctx: Any = _ambient_ctx,
-                    ) -> None:
-                        await run_followup_round(
-                            _s,
-                            topic,
-                            engines_filter,
-                            cfg=cfg,
-                            running_tasks=running_tasks,
-                            ambient_context=_ctx,
-                        )
-
-                await handle_rt(
-                    args,
-                    runtime=runtime,
-                    send=send,
-                    start_roundtable=lambda topic, rounds, engines: _start_roundtable(
-                        msg.channel_id,
+                async def _continue_rt(
+                    topic: str,
+                    engines_filter: list[str] | None,
+                    *,
+                    _s: Any = _completed_session,
+                    _ctx: Any = _ambient_ctx,
+                ) -> None:
+                    await run_followup_round(
+                        _s,
                         topic,
-                        rounds,
-                        engines,
+                        engines_filter,
                         cfg=cfg,
                         running_tasks=running_tasks,
-                        chat_prefs=chat_prefs,
-                        roundtables=roundtables,
-                    ),
-                    continue_roundtable=_continue_rt,
-                    thread_id=msg.root_id,
-                )
-                return
-            case "status":
-                has_session = (await sessions.get(msg.channel_id)) is not None
-                await handle_status(
-                    channel_id=msg.channel_id,
-                    runtime=runtime,
-                    chat_prefs=chat_prefs,
-                    session_engine=None,
-                    has_session=has_session,
-                    send=send,
-                )
-                return
-            case "cancel":
-                await handle_cancel(
-                    channel_id=msg.channel_id,
+                        ambient_context=_ctx,
+                    )
+
+            await handle_rt(
+                args,
+                runtime=runtime,
+                send=send,
+                start_roundtable=lambda topic, rounds, engines: _start_roundtable(
+                    msg.channel_id,
+                    topic,
+                    rounds,
+                    engines,
+                    cfg=cfg,
                     running_tasks=running_tasks,
-                    send=send,
-                )
-                return
-            case "file":
-                await _handle_file_command(args, msg, cfg)
-                return
+                    chat_prefs=chat_prefs,
+                    roundtables=roundtables,
+                ),
+                continue_roundtable=_continue_rt,
+                thread_id=msg.root_id,
+            )
+        case "status":
+            has_session = (await sessions.get(msg.channel_id)) is not None
+            await handle_status(
+                channel_id=msg.channel_id,
+                runtime=runtime,
+                chat_prefs=chat_prefs,
+                session_engine=None,
+                has_session=has_session,
+                send=send,
+            )
+        case "cancel":
+            await handle_cancel(
+                channel_id=msg.channel_id,
+                running_tasks=running_tasks,
+                send=send,
+            )
+        case "file":
+            await _handle_file_command(args, msg, cfg)
+        case _:
+            return False
+
+    return True
+
+
+async def _resolve_prompt(
+    msg: MattermostIncomingMessage,
+    cfg: MattermostBridgeConfig,
+    chat_prefs: ChatPrefsStore | None,
+) -> _ResolvedPrompt | None:
+    """Resolve user input into a clean prompt text.
+
+    Handles auto file upload, file+text attachment, voice transcription,
+    trigger mode check, and @mention stripping.
+    Returns None if the message should not be dispatched to an engine.
+    """
+
+    async def send(message: RenderedMessage) -> None:
+        await _send_to_channel(cfg, msg.channel_id, message)
 
     # -- Auto file put: attachment with no text → save to project --
     if msg.file_ids and not msg.text.strip() and cfg.files_enabled:
@@ -467,7 +479,7 @@ async def _dispatch_message(
             else "No files processed."
         )
         await send(RenderedMessage(text=text))
-        return
+        return None
 
     # -- File + text: save files, add absolute paths to prompt --
     file_context = ""
@@ -495,7 +507,7 @@ async def _dispatch_message(
     if file_context:
         prompt_text = f"{prompt_text}\n{file_context}"
     if not prompt_text:
-        return
+        return None
 
     # -- Trigger mode check --
     trigger_mode = await resolve_trigger_mode(
@@ -505,11 +517,35 @@ async def _dispatch_message(
     if not should_trigger(
         msg, bot_username=cfg.bot_username, trigger_mode=trigger_mode
     ):
-        return
+        return None
     # Strip @mention from text
     prompt_text = strip_mention(prompt_text, cfg.bot_username)
     if not prompt_text:
-        return
+        return None
+
+    return _ResolvedPrompt(text=prompt_text, file_context=file_context)
+
+
+async def _run_engine(
+    resolved_prompt: _ResolvedPrompt,
+    msg: MattermostIncomingMessage,
+    cfg: MattermostBridgeConfig,
+    running_tasks: RunningTasks,
+    sessions: ChatSessionStore,
+    chat_prefs: ChatPrefsStore | None,
+) -> None:
+    """Resolve engine/context and run the agent.
+
+    Error boundary policy:
+    - Runner unavailable (resolve_runner.issue): warn user via message, return
+    - CWD resolution failure: warn user via message, return
+    - handle_message() failure: log only (no user message)
+    - Command handler errors: propagate (crash = bug in our code)
+    """
+    runtime = cfg.runtime
+
+    async def send(message: RenderedMessage) -> None:
+        await _send_to_channel(cfg, msg.channel_id, message)
 
     # -- Resume token --
     resume_token: ResumeToken | None = None
@@ -522,7 +558,7 @@ async def _dispatch_message(
         ambient_context = await chat_prefs.get_context(msg.channel_id)
 
     resolved = runtime.resolve_message(
-        text=prompt_text,
+        text=resolved_prompt.text,
         reply_text=None,
         ambient_context=ambient_context,
         chat_id=msg.channel_id,
@@ -625,6 +661,30 @@ async def _dispatch_message(
             channel_id=msg.channel_id,
             post_id=msg.post_id,
         )
+
+
+async def _dispatch_message(
+    msg: MattermostIncomingMessage,
+    cfg: MattermostBridgeConfig,
+    running_tasks: RunningTasks,
+    sessions: ChatSessionStore,
+    chat_prefs: ChatPrefsStore | None,
+    roundtables: RoundtableStore | None = None,
+) -> None:
+    """Dispatch: slash commands → prompt resolution → engine run."""
+    # 1. Command handling
+    if await _try_dispatch_command(
+        msg, cfg, running_tasks, sessions, chat_prefs, roundtables
+    ):
+        return
+
+    # 2. Prompt resolution (files, voice, trigger, mention strip)
+    resolved = await _resolve_prompt(msg, cfg, chat_prefs)
+    if resolved is None:
+        return
+
+    # 3. Engine execution (context, runner, persona, session → run)
+    await _run_engine(resolved, msg, cfg, running_tasks, sessions, chat_prefs)
 
 
 async def run_main_loop(

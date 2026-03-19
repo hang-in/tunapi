@@ -13,6 +13,7 @@ If you need exact options and defaults, use **[Reference](../reference/index.md)
 - [Route by chat](route-by-chat.md) (dedicated chats per project)
 - [Topics](topics.md) (forum threads bound to repo/branch + per-topic defaults)
 - [Chat sessions](chat-sessions.md) (auto-resume without replying)
+- [Roundtable](roundtable.md) (multi-agent discussion with follow-up)
 
 ## Messaging extras
 

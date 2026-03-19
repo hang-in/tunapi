@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import anyio
 
@@ -15,6 +14,7 @@ from ..runner_bridge import IncomingMessage, handle_message
 from ..transport import MessageRef, RenderedMessage
 from .bridge import CANCEL_EMOJI, MattermostBridgeConfig
 from .chat_prefs import ChatPrefsStore
+from .chat_sessions import ChatSessionStore
 from .commands import (
     handle_cancel,
     handle_help,
@@ -29,6 +29,7 @@ from .commands import (
 from .roundtable import (
     RoundtableSession,
     RoundtableStore,
+    run_followup_round,
     run_roundtable,
 )
 from .files import handle_file_get, handle_file_put
@@ -43,22 +44,6 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 _CONFIG_DIR = Path.home() / ".tunapi"
-
-
-@dataclass
-class ChatSessionStore:
-    """Stores the last resume token per channel for session_mode='chat'."""
-
-    _sessions: dict[str, ResumeToken] = field(default_factory=dict)
-
-    def get(self, channel_id: str) -> ResumeToken | None:
-        return self._sessions.get(channel_id)
-
-    def set(self, channel_id: str, token: ResumeToken) -> None:
-        self._sessions[channel_id] = token
-
-    def clear(self, channel_id: str) -> None:
-        self._sessions.pop(channel_id, None)
 
 
 async def _send_startup(cfg: MattermostBridgeConfig) -> None:
@@ -135,7 +120,9 @@ async def _handle_voice(
             api_key=cfg.voice_api_key,
         )
         if text:
-            logger.info("voice.transcribed", channel_id=msg.channel_id, length=len(text))
+            logger.info(
+                "voice.transcribed", channel_id=msg.channel_id, length=len(text)
+            )
             return text
 
     return None
@@ -149,7 +136,8 @@ async def _handle_file_command(
     """Handle /file put or /file get. Returns True if handled."""
     if not cfg.files_enabled:
         await _send_to_channel(
-            cfg, msg.channel_id,
+            cfg,
+            msg.channel_id,
             RenderedMessage(text="File transfer is disabled."),
         )
         return True
@@ -166,7 +154,8 @@ async def _handle_file_command(
     if subcmd == "put":
         if not msg.file_ids:
             await _send_to_channel(
-                cfg, msg.channel_id,
+                cfg,
+                msg.channel_id,
                 RenderedMessage(text="Attach files to the message to upload."),
             )
             return True
@@ -180,7 +169,11 @@ async def _handle_file_command(
             deny_globs=cfg.files_deny_globs,
             max_bytes=cfg.files_max_upload_bytes,
         )
-        text = "\n".join(f"- {r.message}" for r in results) if results else "No files processed."
+        text = (
+            "\n".join(f"- {r.message}" for r in results)
+            if results
+            else "No files processed."
+        )
         await _send_to_channel(cfg, msg.channel_id, RenderedMessage(text=text))
         return True
 
@@ -188,7 +181,8 @@ async def _handle_file_command(
         rel_path = subargs.strip()
         if not rel_path:
             await _send_to_channel(
-                cfg, msg.channel_id,
+                cfg,
+                msg.channel_id,
                 RenderedMessage(text="Usage: `/file get <path>`"),
             )
             return True
@@ -215,15 +209,19 @@ async def _handle_file_command(
             )
         else:
             await _send_to_channel(
-                cfg, msg.channel_id,
+                cfg,
+                msg.channel_id,
                 RenderedMessage(text="Failed to upload file."),
             )
         return True
 
     else:
         await _send_to_channel(
-            cfg, msg.channel_id,
-            RenderedMessage(text="Usage: `/file put` (with attachments) or `/file get <path>`"),
+            cfg,
+            msg.channel_id,
+            RenderedMessage(
+                text="Usage: `/file put` (with attachments) or `/file get <path>`"
+            ),
         )
         return True
 
@@ -245,7 +243,7 @@ async def _resolve_persona_prefix(
     persona = await chat_prefs.get_persona(name)
     if persona is None:
         return None
-    user_text = prompt[m.end():]
+    user_text = prompt[m.end() :]
     return f"[역할: {persona.name}]\n{persona.prompt}\n\n---\n\n{user_text}"
 
 
@@ -309,7 +307,7 @@ async def _start_roundtable(
             ambient_context=ambient_context,
         )
     finally:
-        roundtables.remove(thread_id)
+        roundtables.complete(thread_id)
 
 
 async def _dispatch_message(
@@ -332,7 +330,7 @@ async def _dispatch_message(
     if cmd is not None:
         match cmd:
             case "new":
-                sessions.clear(msg.channel_id)
+                await sessions.clear(msg.channel_id)
                 await send(RenderedMessage(text="새 대화를 시작합니다."))
                 return
             case "help":
@@ -340,53 +338,103 @@ async def _dispatch_message(
                 return
             case "model":
                 await handle_model(
-                    args, channel_id=msg.channel_id,
-                    runtime=runtime, chat_prefs=chat_prefs, send=send,
+                    args,
+                    channel_id=msg.channel_id,
+                    runtime=runtime,
+                    chat_prefs=chat_prefs,
+                    send=send,
                 )
                 return
             case "trigger":
                 await handle_trigger(
-                    args, channel_id=msg.channel_id,
-                    chat_prefs=chat_prefs, send=send,
+                    args,
+                    channel_id=msg.channel_id,
+                    chat_prefs=chat_prefs,
+                    send=send,
                 )
                 return
             case "project":
                 await handle_project(
-                    args, channel_id=msg.channel_id,
-                    runtime=runtime, chat_prefs=chat_prefs,
+                    args,
+                    channel_id=msg.channel_id,
+                    runtime=runtime,
+                    chat_prefs=chat_prefs,
                     projects_root=cfg.projects_root,
                     send=send,
                 )
                 return
             case "persona":
                 await handle_persona(
-                    args, chat_prefs=chat_prefs, send=send,
+                    args,
+                    chat_prefs=chat_prefs,
+                    send=send,
                 )
                 return
             case "rt":
+                # Build continue_roundtable callback if in a completed RT thread
+                _continue_rt = None
+                if (
+                    msg.root_id
+                    and roundtables
+                    and roundtables.get_completed(msg.root_id)
+                ):
+                    _completed_session = roundtables.get_completed(msg.root_id)
+                    _ambient_ctx = (
+                        await chat_prefs.get_context(msg.channel_id)
+                        if chat_prefs
+                        else None
+                    )
+
+                    async def _continue_rt(
+                        topic: str,
+                        engines_filter: list[str] | None,
+                        *,
+                        _s: Any = _completed_session,
+                        _ctx: Any = _ambient_ctx,
+                    ) -> None:
+                        await run_followup_round(
+                            _s,
+                            topic,
+                            engines_filter,
+                            cfg=cfg,
+                            running_tasks=running_tasks,
+                            ambient_context=_ctx,
+                        )
+
                 await handle_rt(
-                    args, runtime=runtime, send=send,
+                    args,
+                    runtime=runtime,
+                    send=send,
                     start_roundtable=lambda topic, rounds, engines: _start_roundtable(
-                        msg.channel_id, topic, rounds, engines,
+                        msg.channel_id,
+                        topic,
+                        rounds,
+                        engines,
                         cfg=cfg,
                         running_tasks=running_tasks,
                         chat_prefs=chat_prefs,
                         roundtables=roundtables,
                     ),
+                    continue_roundtable=_continue_rt,
+                    thread_id=msg.root_id,
                 )
                 return
             case "status":
-                has_session = sessions.get(msg.channel_id) is not None
+                has_session = (await sessions.get(msg.channel_id)) is not None
                 await handle_status(
-                    channel_id=msg.channel_id, runtime=runtime,
+                    channel_id=msg.channel_id,
+                    runtime=runtime,
                     chat_prefs=chat_prefs,
-                    session_engine=None, has_session=has_session, send=send,
+                    session_engine=None,
+                    has_session=has_session,
+                    send=send,
                 )
                 return
             case "cancel":
                 await handle_cancel(
                     channel_id=msg.channel_id,
-                    running_tasks=running_tasks, send=send,
+                    running_tasks=running_tasks,
+                    send=send,
                 )
                 return
             case "file":
@@ -407,7 +455,11 @@ async def _dispatch_message(
             deny_globs=cfg.files_deny_globs,
             max_bytes=cfg.files_max_upload_bytes,
         )
-        text = "\n".join(f"- {r.message}" for r in results) if results else "No files processed."
+        text = (
+            "\n".join(f"- {r.message}" for r in results)
+            if results
+            else "No files processed."
+        )
         await send(RenderedMessage(text=text))
         return
 
@@ -441,9 +493,12 @@ async def _dispatch_message(
 
     # -- Trigger mode check --
     trigger_mode = await resolve_trigger_mode(
-        msg.channel_id, chat_prefs,
+        msg.channel_id,
+        chat_prefs,
     )
-    if not should_trigger(msg, bot_username=cfg.bot_username, trigger_mode=trigger_mode):
+    if not should_trigger(
+        msg, bot_username=cfg.bot_username, trigger_mode=trigger_mode
+    ):
         return
     # Strip @mention from text
     prompt_text = strip_mention(prompt_text, cfg.bot_username)
@@ -453,7 +508,7 @@ async def _dispatch_message(
     # -- Resume token --
     resume_token: ResumeToken | None = None
     if cfg.session_mode == "chat":
-        resume_token = sessions.get(msg.channel_id)
+        resume_token = await sessions.get(msg.channel_id)
 
     # -- Resolve engine/context (use channel-bound project if set) --
     ambient_context = None
@@ -542,7 +597,7 @@ async def _dispatch_message(
 
     async def on_thread_known(token: ResumeToken, done: anyio.Event) -> None:
         if cfg.session_mode == "chat":
-            sessions.set(msg.channel_id, token)
+            await sessions.set(msg.channel_id, token)
 
     try:
         await handle_message(
@@ -578,7 +633,7 @@ async def run_main_loop(
     await _send_startup(cfg)
 
     running_tasks: RunningTasks = {}
-    sessions = ChatSessionStore()
+    sessions = ChatSessionStore(_CONFIG_DIR / "mattermost_sessions.json")
     chat_prefs = ChatPrefsStore(_CONFIG_DIR / "mattermost_prefs.json")
     roundtables = RoundtableStore()
 
@@ -607,6 +662,11 @@ async def run_main_loop(
                         files=len(update.file_ids),
                     )
                     tg.start_soon(
-                        _dispatch_message, update, cfg, running_tasks,
-                        sessions, chat_prefs, roundtables,
+                        _dispatch_message,
+                        update,
+                        cfg,
+                        running_tasks,
+                        sessions,
+                        chat_prefs,
+                        roundtables,
                     )

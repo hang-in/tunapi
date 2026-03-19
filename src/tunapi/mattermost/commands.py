@@ -66,7 +66,7 @@ async def handle_help(
         "| `!trigger <all\\|mentions>` | Set trigger mode |",
         "| `!project list\\|set\\|info` | Manage project binding |",
         "| `!persona add\\|list\\|remove` | Manage personas |",
-        "| `!rt \"주제\"` | Multi-agent roundtable |",
+        '| `!rt "주제"` | Multi-agent roundtable |',
         "| `!file put` | Upload attached files to project |",
         "| `!file get <path>` | Download a file from project |",
         "| `!status` | Show current session info |",
@@ -99,16 +99,20 @@ async def handle_model(
             current = await chat_prefs.get_default_engine(channel_id)
         current_display = current or runtime.default_engine
         engine_list = ", ".join(f"`{e}`" for e in available)
-        await send(RenderedMessage(
-            text=f"Current engine: `{current_display}`\nAvailable: {engine_list}\n\nUsage: `/model <engine>`"
-        ))
+        await send(
+            RenderedMessage(
+                text=f"Current engine: `{current_display}`\nAvailable: {engine_list}\n\nUsage: `/model <engine>`"
+            )
+        )
         return
 
     engine_map = {e.lower(): e for e in available}
     if engine not in engine_map:
-        await send(RenderedMessage(
-            text=f"Unknown engine `{engine}`. Available: {', '.join(f'`{e}`' for e in available)}"
-        ))
+        await send(
+            RenderedMessage(
+                text=f"Unknown engine `{engine}`. Available: {', '.join(f'`{e}`' for e in available)}"
+            )
+        )
         return
 
     if chat_prefs:
@@ -132,15 +136,19 @@ async def handle_trigger(
         current = "all"
         if chat_prefs:
             current = await chat_prefs.get_trigger_mode(channel_id) or "all"
-        await send(RenderedMessage(
-            text=f"Current trigger mode: `{current}`\n\nUsage: `/trigger all` or `/trigger mentions`"
-        ))
+        await send(
+            RenderedMessage(
+                text=f"Current trigger mode: `{current}`\n\nUsage: `/trigger all` or `/trigger mentions`"
+            )
+        )
         return
 
     if chat_prefs:
         await chat_prefs.set_trigger_mode(channel_id, mode)
 
-    desc = "respond to all messages" if mode == "all" else "respond only when @mentioned"
+    desc = (
+        "respond to all messages" if mode == "all" else "respond only when @mentioned"
+    )
     await send(RenderedMessage(text=f"Trigger mode set to `{mode}` — {desc}"))
     logger.info("command.trigger", channel_id=channel_id, mode=mode)
 
@@ -203,7 +211,9 @@ async def handle_project(
                 discovered = sorted(
                     d.name
                     for d in root.iterdir()
-                    if d.is_dir() and (d / ".git").exists() and d.name not in {c.lower() for c in configured}
+                    if d.is_dir()
+                    and (d / ".git").exists()
+                    and d.name not in {c.lower() for c in configured}
                 )
 
         lines = ["**Projects**", ""]
@@ -234,14 +244,18 @@ async def handle_project(
                 project_key = name
 
         if project_key is None:
-            await send(RenderedMessage(
-                text=f"Unknown project `{name}`. Use `!project list` to see available projects."
-            ))
+            await send(
+                RenderedMessage(
+                    text=f"Unknown project `{name}`. Use `!project list` to see available projects."
+                )
+            )
             return
 
         if chat_prefs:
             await chat_prefs.set_context(channel_id, RunContext(project=project_key))
-        await send(RenderedMessage(text=f"Project set to `{project_key}` for this channel."))
+        await send(
+            RenderedMessage(text=f"Project set to `{project_key}` for this channel.")
+        )
         logger.info("command.project.set", channel_id=channel_id, project=project_key)
         return
 
@@ -257,14 +271,20 @@ async def handle_project(
             if ctx.branch:
                 lines.append(f"**Branch:** `{ctx.branch}`")
         else:
-            lines = ["No project bound to this channel.", "", "Usage: `!project set <name>`"]
+            lines = [
+                "No project bound to this channel.",
+                "",
+                "Usage: `!project set <name>`",
+            ]
         await send(RenderedMessage(text="\n".join(lines)))
         return
 
     # Default: show usage
-    await send(RenderedMessage(
-        text="Usage: `!project list` | `!project set <name>` | `!project info`"
-    ))
+    await send(
+        RenderedMessage(
+            text="Usage: `!project list` | `!project set <name>` | `!project info`"
+        )
+    )
 
 
 async def handle_persona(
@@ -286,16 +306,12 @@ async def handle_persona(
         # !persona add <name> "prompt text"  or  !persona add <name> prompt text
         add_parts = subargs.split(None, 1)
         if len(add_parts) < 2:
-            await send(RenderedMessage(
-                text='Usage: `!persona add <name> "<prompt>"`'
-            ))
+            await send(RenderedMessage(text='Usage: `!persona add <name> "<prompt>"`'))
             return
         name = add_parts[0].lower()
         prompt = add_parts[1].strip().strip('"').strip("'")
         if not prompt:
-            await send(RenderedMessage(
-                text='Usage: `!persona add <name> "<prompt>"`'
-            ))
+            await send(RenderedMessage(text='Usage: `!persona add <name> "<prompt>"`'))
             return
         await chat_prefs.add_persona(name, prompt)
         await send(RenderedMessage(text=f"Persona `{name}` added."))
@@ -305,7 +321,11 @@ async def handle_persona(
     if subcmd == "list":
         personas = await chat_prefs.list_personas()
         if not personas:
-            await send(RenderedMessage(text="No personas defined. Use `!persona add <name> \"<prompt>\"`"))
+            await send(
+                RenderedMessage(
+                    text='No personas defined. Use `!persona add <name> "<prompt>"`'
+                )
+            )
             return
         lines = ["**Personas**", ""]
         for name, p in sorted(personas.items()):
@@ -341,9 +361,11 @@ async def handle_persona(
         return
 
     # Default: show usage
-    await send(RenderedMessage(
-        text="Usage: `!persona add <name> \"<prompt>\"` | `!persona list` | `!persona show <name>` | `!persona remove <name>`"
-    ))
+    await send(
+        RenderedMessage(
+            text='Usage: `!persona add <name> "<prompt>"` | `!persona list` | `!persona show <name>` | `!persona remove <name>`'
+        )
+    )
 
 
 async def handle_rt(
@@ -352,9 +374,15 @@ async def handle_rt(
     runtime: Any,
     send: Any,
     start_roundtable: Any,
+    continue_roundtable: Any | None = None,
+    thread_id: str | None = None,
 ) -> None:
-    """Handle ``!rt "topic" [--rounds N]`` command."""
-    from .roundtable import parse_rt_args
+    """Handle ``!rt`` commands.
+
+    - ``!rt "topic" [--rounds N]`` — start a new roundtable
+    - ``!rt follow [engines] "topic"`` — follow-up in completed roundtable thread
+    """
+    from .roundtable import parse_followup_args, parse_rt_args
 
     rt_config = runtime.roundtable
     rt_engines = list(rt_config.engines) or list(runtime.available_engine_ids())
@@ -363,6 +391,42 @@ async def handle_rt(
         await send(RenderedMessage(text="⚠️ No engines available for roundtable."))
         return
 
+    # Check for "follow" subcommand
+    stripped = args.strip()
+    if stripped.lower().startswith("follow"):
+        follow_args = stripped[len("follow") :].strip()
+        if not continue_roundtable:
+            await send(
+                RenderedMessage(
+                    text="⚠️ `!rt follow`는 완료된 라운드테이블 스레드에서만 사용할 수 있습니다."
+                )
+            )
+            return
+
+        topic, engines_filter, error = parse_followup_args(follow_args, rt_engines)
+        if error:
+            await send(RenderedMessage(text=f"⚠️ {error}"))
+            return
+        if not topic:
+            engines_display = ", ".join(f"`{e}`" for e in rt_engines)
+            await send(
+                RenderedMessage(
+                    text=(
+                        "**Roundtable Follow-up** — 완료된 토론에 후속 질문\n\n"
+                        "Usage:\n"
+                        '- `!rt follow "질문"` — 전체 에이전트\n'
+                        '- `!rt follow claude "질문"` — 특정 에이전트\n'
+                        '- `!rt follow gemini,claude "질문"` — 복수 지정\n\n'
+                        f"Engines: {engines_display}"
+                    )
+                )
+            )
+            return
+
+        await continue_roundtable(topic, engines_filter)
+        return
+
+    # Default: start a new roundtable
     topic, rounds, error = parse_rt_args(args, rt_config)
 
     if error:
@@ -370,14 +434,19 @@ async def handle_rt(
         return
     if not topic:
         engines_display = ", ".join(f"`{e}`" for e in rt_engines)
-        await send(RenderedMessage(
-            text=(
-                "**Roundtable** — 여러 에이전트의 의견을 순차 수집\n\n"
-                "Usage: `!rt \"주제\"` or `!rt \"주제\" --rounds 2`\n\n"
-                f"Engines: {engines_display}\n"
-                f"Default rounds: {rt_config.rounds} (max {rt_config.max_rounds})"
+        await send(
+            RenderedMessage(
+                text=(
+                    "**Roundtable** — 여러 에이전트의 의견을 순차 수집\n\n"
+                    "Usage:\n"
+                    '- `!rt "주제"` — 새 라운드테이블\n'
+                    '- `!rt "주제" --rounds 2` — 다중 라운드\n'
+                    '- `!rt follow [에이전트] "질문"` — 후속 토론\n\n'
+                    f"Engines: {engines_display}\n"
+                    f"Default rounds: {rt_config.rounds} (max {rt_config.max_rounds})"
+                )
             )
-        ))
+        )
         return
 
     await start_roundtable(topic, rounds, rt_engines)

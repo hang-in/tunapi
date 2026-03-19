@@ -6,7 +6,17 @@ from dataclasses import dataclass, field
 
 import anyio
 
+import contextlib
+
 from .context import RunContext
+from .journal import (
+    Journal,
+    JournalEntry,
+    PendingRun,
+    PendingRunLedger,
+    _truncate,
+    make_run_id,
+)
 from .logging import bind_run_context, get_logger
 from .model import CompletedEvent, ResumeToken, StartedEvent, TunapiEvent
 from .presenter import Presenter
@@ -181,27 +191,10 @@ class ProgressEdits:
         self.rendered_seq = 0
         self.signal_send, self.signal_recv = anyio.create_memory_object_stream(1)
 
-    async def _typing_heartbeat(self) -> None:
-        """Send typing indicator every 3s if transport supports it."""
-        # MattermostTransport._bot._client → HttpMattermostClient
-        bot = getattr(self.transport, "_bot", None)
-        client = getattr(bot, "_client", None) if bot is not None else None
-        if client is None or not hasattr(client, "post_typing"):
-            return
-        while True:
-            try:
-                await client.post_typing(str(self.channel_id))
-            except Exception:  # noqa: BLE001
-                pass
-            await anyio.sleep(3)
-
     async def run(self) -> None:
         if self.progress_ref is None:
             return
-        async with anyio.create_task_group() as tg:
-            tg.start_soon(self._typing_heartbeat)
-            await self._run_progress_loop()
-            tg.cancel_scope.cancel()
+        await self._run_progress_loop()
 
     async def _run_progress_loop(self) -> None:
         while True:
@@ -404,6 +397,76 @@ async def send_result_message(
         await cfg.transport.delete(ref=progress_ref)
 
 
+async def _finalize_run(
+    journal: Journal | None,
+    run_id: str | None,
+    incoming: IncomingMessage,
+    engine: str,
+    tracker: ProgressTracker,
+    *,
+    event: str,
+    data: dict | None = None,
+    ledger: PendingRunLedger | None = None,
+) -> None:
+    """Write journal entries and complete ledger (best-effort)."""
+    if ledger is not None and run_id is not None:
+        with contextlib.suppress(Exception):
+            await ledger.complete(run_id)
+    if journal is None or run_id is None:
+        return
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+    ch = str(incoming.channel_id)
+    entries = [
+        JournalEntry(
+            run_id=run_id,
+            channel_id=ch,
+            timestamp=ts,
+            event="prompt",
+            engine=engine,
+            data={"text": _truncate(incoming.text)},
+        ),
+    ]
+    if tracker.resume is not None:
+        entries.append(
+            JournalEntry(
+                run_id=run_id,
+                channel_id=ch,
+                timestamp=ts,
+                event="started",
+                engine=engine,
+                data={"resume_token": tracker.resume.value},
+            )
+        )
+    entries.extend(
+        JournalEntry(
+            run_id=run_id,
+            channel_id=ch,
+            timestamp=ts,
+            event="action",
+            engine=engine,
+            data={
+                "action_id": rec.action_id,
+                "kind": rec.kind,
+                "title": rec.title,
+            },
+        )
+        for rec in tracker.action_history
+    )
+    entries.append(
+        JournalEntry(
+            run_id=run_id,
+            channel_id=ch,
+            timestamp=ts,
+            event=event,
+            engine=engine,
+            data=data or {},
+        )
+    )
+    for entry in entries:
+        with contextlib.suppress(Exception):
+            await journal.append(entry)
+
+
 async def handle_message(
     cfg: ExecBridgeConfig,
     *,
@@ -418,6 +481,9 @@ async def handle_message(
     | None = None,
     progress_ref: MessageRef | None = None,
     clock: Callable[[], float] = time.monotonic,
+    journal: Journal | None = None,
+    run_id: str | None = None,
+    ledger: PendingRunLedger | None = None,
 ) -> str | None:
     logger.info(
         "handle.incoming",
@@ -427,6 +493,23 @@ async def handle_message(
         text=incoming.text,
     )
     started_at = clock()
+
+    # Generate run_id for journal if not provided
+    if run_id is None and (journal is not None or ledger is not None):
+        run_id = make_run_id(str(incoming.channel_id), str(incoming.message_id))
+
+    # Register in pending-run ledger (before runner starts)
+    if ledger is not None and run_id is not None:
+        with contextlib.suppress(Exception):
+            await ledger.register(
+                PendingRun(
+                    run_id=run_id,
+                    channel_id=str(incoming.channel_id),
+                    engine=runner.engine,
+                    prompt_summary=_truncate(incoming.text, 200),
+                    started_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+                )
+            )
     is_resume_line = runner.is_resume_line
     resume_strip = strip_resume_line or is_resume_line
     runner_text = _strip_resume_lines(incoming.text, is_resume_line=resume_strip)
@@ -544,6 +627,16 @@ async def handle_message(
             delete_tag="error",
             thread_id=incoming.thread_id,
         )
+        await _finalize_run(
+            journal,
+            run_id,
+            incoming,
+            runner.engine,
+            progress_tracker,
+            event="interrupted",
+            data={"reason": "error", "error": err_body},
+            ledger=ledger,
+        )
         return None
 
     if outcome.cancelled:
@@ -573,6 +666,16 @@ async def handle_message(
             replace_ref=progress_ref,
             delete_tag="cancel",
             thread_id=incoming.thread_id,
+        )
+        await _finalize_run(
+            journal,
+            run_id,
+            incoming,
+            runner.engine,
+            progress_tracker,
+            event="interrupted",
+            data={"reason": "cancel"},
+            ledger=ledger,
         )
         return None
 
@@ -637,5 +740,20 @@ async def handle_message(
         replace_ref=progress_ref,
         delete_tag="final",
         thread_id=incoming.thread_id,
+    )
+    await _finalize_run(
+        journal,
+        run_id,
+        incoming,
+        runner.engine,
+        progress_tracker,
+        event="completed",
+        data={
+            "ok": run_ok,
+            "answer": _truncate(final_answer),
+            "error": run_error,
+            "usage": completed.usage,
+        },
+        ledger=ledger,
     )
     return final_answer if run_ok is not False else None

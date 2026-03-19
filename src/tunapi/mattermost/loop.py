@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import anyio
 
+from ..journal import Journal, PendingRunLedger, build_handoff_preamble, make_run_id
 from ..logging import bind_run_context, get_logger
 from ..model import ResumeToken
 from ..runner_bridge import IncomingMessage, handle_message
@@ -354,16 +355,10 @@ async def _dispatch_rt_command(
 ) -> None:
     """Handle the !rt / /rt command, including follow-up detection."""
     continue_rt = None
-    if (
-        msg.root_id
-        and roundtables
-        and roundtables.get_completed(msg.root_id)
-    ):
+    if msg.root_id and roundtables and roundtables.get_completed(msg.root_id):
         completed_session = roundtables.get_completed(msg.root_id)
         ambient_ctx = (
-            await chat_prefs.get_context(msg.channel_id)
-            if chat_prefs
-            else None
+            await chat_prefs.get_context(msg.channel_id) if chat_prefs else None
         )
 
         async def continue_rt(
@@ -409,6 +404,7 @@ async def _try_dispatch_command(
     chat_prefs: ChatPrefsStore | None,
     roundtables: RoundtableStore | None,
     send: _SendFn,
+    journal: Journal | None = None,
 ) -> bool:
     """Handle slash/bang commands. Returns True if a command was dispatched."""
     cmd, args = parse_command(msg.text)
@@ -420,6 +416,8 @@ async def _try_dispatch_command(
     match cmd:
         case "new":
             await sessions.clear(msg.channel_id)
+            if journal:
+                await journal.mark_reset(msg.channel_id)
             await send(RenderedMessage(text="새 대화를 시작합니다."))
         case "help":
             await handle_help(runtime=runtime, send=send)
@@ -458,7 +456,7 @@ async def _try_dispatch_command(
                 args, msg, cfg, running_tasks, chat_prefs, roundtables, send
             )
         case "status":
-            has_session = (await sessions.get(msg.channel_id)) is not None
+            has_session = await sessions.has_any(msg.channel_id)
             await handle_status(
                 channel_id=msg.channel_id,
                 runtime=runtime,
@@ -546,6 +544,8 @@ async def _run_engine(
     sessions: ChatSessionStore,
     chat_prefs: ChatPrefsStore | None,
     send: _SendFn,
+    journal: Journal | None = None,
+    ledger: PendingRunLedger | None = None,
 ) -> None:
     """Resolve engine/context and run the agent.
 
@@ -556,11 +556,6 @@ async def _run_engine(
     - Command handler errors: propagate (crash = bug in our code)
     """
     runtime = cfg.runtime
-
-    # -- Resume token --
-    resume_token: ResumeToken | None = None
-    if cfg.session_mode == "chat":
-        resume_token = await sessions.get(msg.channel_id)
 
     # -- Resolve engine/context (use channel-bound project if set) --
     ambient_context = None
@@ -574,7 +569,6 @@ async def _run_engine(
         chat_id=msg.channel_id,
     )
 
-    effective_resume = resolved.resume_token or resume_token
     context = resolved.context
 
     # Check chat prefs for engine override
@@ -589,8 +583,12 @@ async def _run_engine(
         context=context,
     )
 
-    if effective_resume is not None and effective_resume.engine != engine:
-        effective_resume = None
+    # -- Resume token (engine-specific lookup) --
+    resume_token: ResumeToken | None = None
+    if cfg.session_mode == "chat":
+        resume_token = await sessions.get(msg.channel_id, engine)
+
+    effective_resume = resolved.resume_token or resume_token
 
     resolved_runner = runtime.resolve_runner(
         resume_token=effective_resume,
@@ -639,6 +637,21 @@ async def _run_engine(
         if persona_prompt is not None:
             final_prompt = persona_prompt
 
+    # -- Handoff preamble (when resume token is absent) --
+    if effective_resume is None and journal is not None and final_prompt:
+        with contextlib.suppress(Exception):
+            j_entries = await journal.recent_entries(msg.channel_id, limit=50)
+            if j_entries:
+                preamble = build_handoff_preamble(
+                    j_entries,
+                    old_engine=j_entries[-1].engine,
+                    reason="engine_change"
+                    if resume_token is None
+                    else "resume_expired",
+                )
+                if preamble:
+                    final_prompt = f"{preamble}\n{final_prompt}"
+
     incoming = IncomingMessage(
         channel_id=msg.channel_id,
         message_id=msg.post_id,
@@ -651,6 +664,8 @@ async def _run_engine(
         if cfg.session_mode == "chat":
             await sessions.set(msg.channel_id, token)
 
+    j_run_id = make_run_id(msg.channel_id, msg.post_id) if journal else None
+
     try:
         await handle_message(
             cfg.exec_cfg,
@@ -662,6 +677,9 @@ async def _run_engine(
             strip_resume_line=runtime.is_resume_line,
             running_tasks=running_tasks,
             on_thread_known=on_thread_known,
+            journal=journal,
+            run_id=j_run_id,
+            ledger=ledger,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(
@@ -680,6 +698,8 @@ async def _dispatch_message(
     sessions: ChatSessionStore,
     chat_prefs: ChatPrefsStore | None,
     roundtables: RoundtableStore | None = None,
+    journal: Journal | None = None,
+    ledger: PendingRunLedger | None = None,
 ) -> None:
     """Dispatch: slash commands → prompt resolution → engine run."""
 
@@ -688,7 +708,14 @@ async def _dispatch_message(
 
     # 1. Command handling
     if await _try_dispatch_command(
-        msg, cfg, running_tasks, sessions, chat_prefs, roundtables, send
+        msg,
+        cfg,
+        running_tasks,
+        sessions,
+        chat_prefs,
+        roundtables,
+        send,
+        journal=journal,
     ):
         return
 
@@ -698,7 +725,17 @@ async def _dispatch_message(
         return
 
     # 3. Engine execution (context, runner, persona, session → run)
-    await _run_engine(resolved, msg, cfg, running_tasks, sessions, chat_prefs, send)
+    await _run_engine(
+        resolved,
+        msg,
+        cfg,
+        running_tasks,
+        sessions,
+        chat_prefs,
+        send,
+        journal=journal,
+        ledger=ledger,
+    )
 
 
 async def run_main_loop(
@@ -712,6 +749,27 @@ async def run_main_loop(
     """Main event loop: connect WebSocket, dispatch messages."""
     await _send_startup(cfg)
 
+    running_tasks: RunningTasks = {}
+    sessions = ChatSessionStore(_CONFIG_DIR / "mattermost_sessions.json")
+    chat_prefs = ChatPrefsStore(_CONFIG_DIR / "mattermost_prefs.json")
+    roundtables = RoundtableStore()
+    journal = Journal(_CONFIG_DIR / "journals")
+    ledger = PendingRunLedger(_CONFIG_DIR / "pending_runs.json")
+    heartbeat_path = _CONFIG_DIR / "heartbeat"
+
+    # Detect abnormal termination (no shutdown state but stale heartbeat)
+    if heartbeat_path.exists() and not _SHUTDOWN_STATE_FILE.exists():
+        with contextlib.suppress(Exception):
+            from datetime import datetime
+
+            last_beat = datetime.fromisoformat(heartbeat_path.read_text().strip())
+            age = (datetime.now() - last_beat).total_seconds()
+            if age > 30:
+                logger.warning(
+                    "mattermost.abnormal_termination_detected",
+                    last_heartbeat_age_s=round(age),
+                )
+
     # Notify if previous session was shut down (restart detection)
     if _SHUTDOWN_STATE_FILE.exists():
         with contextlib.suppress(Exception):
@@ -721,7 +779,9 @@ async def run_main_loop(
             ts = state.get("timestamp", "")
             parts = [f"🔄 **서비스 재시작 완료** (이전 종료: {reason})"]
             if tasks > 0:
-                parts.append(f"⚠️ 종료 시 진행 중이던 작업 {tasks}개가 중단되었을 수 있습니다.")
+                parts.append(
+                    f"⚠️ 종료 시 진행 중이던 작업 {tasks}개가 중단되었을 수 있습니다."
+                )
             if ts:
                 parts.append(f"종료 시각: {ts}")
             msg_text = "\n".join(parts)
@@ -731,10 +791,25 @@ async def run_main_loop(
             )
         _SHUTDOWN_STATE_FILE.unlink(missing_ok=True)
 
-    running_tasks: RunningTasks = {}
-    sessions = ChatSessionStore(_CONFIG_DIR / "mattermost_sessions.json")
-    chat_prefs = ChatPrefsStore(_CONFIG_DIR / "mattermost_prefs.json")
-    roundtables = RoundtableStore()
+    # Process pending runs from previous crash/restart
+    with contextlib.suppress(Exception):
+        pending = await ledger.get_all()
+        if pending:
+            # Group by channel and mark interrupted in journal
+            from itertools import groupby
+            from operator import attrgetter
+
+            sorted_pending = sorted(pending, key=attrgetter("channel_id"))
+            for ch_id, runs in groupby(sorted_pending, key=attrgetter("channel_id")):
+                run_list = list(runs)
+                for run in run_list:
+                    await journal.mark_interrupted(run.channel_id, run.run_id, "crash")
+                msg_text = f"⚠️ 이전 세션에서 중단된 작업 {len(run_list)}개가 있습니다."
+                await cfg.exec_cfg.transport.send(
+                    channel_id=ch_id,
+                    message=RenderedMessage(text=msg_text),
+                )
+            await ledger.clear_all()
     shutdown = anyio.Event()
 
     # SIGTERM handler — set shutdown event for graceful exit
@@ -745,7 +820,16 @@ async def run_main_loop(
     with contextlib.suppress(OSError, ValueError):
         signal.signal(signal.SIGTERM, _on_sigterm)
 
+    async def _heartbeat_loop() -> None:
+        from datetime import datetime
+
+        while True:
+            with contextlib.suppress(Exception):
+                heartbeat_path.write_text(datetime.now().isoformat())
+            await anyio.sleep(10)
+
     async with anyio.create_task_group() as dispatch_tg:
+        dispatch_tg.start_soon(_heartbeat_loop)
         async with cfg.bot.websocket_events() as events:
             async for ws_event in events:
                 if shutdown.is_set():
@@ -762,9 +846,7 @@ async def run_main_loop(
                     continue
 
                 if isinstance(update, MattermostReactionEvent):
-                    await _handle_cancel_reaction(
-                        update, running_tasks, roundtables
-                    )
+                    await _handle_cancel_reaction(update, running_tasks, roundtables)
                 elif isinstance(update, MattermostIncomingMessage):
                     if not update.text and not update.file_ids:
                         continue
@@ -783,14 +865,14 @@ async def run_main_loop(
                         sessions,
                         chat_prefs,
                         roundtables,
+                        journal,
+                        ledger,
                     )
 
         # WebSocket closed (graceful or not).
         # Wait for running tasks to complete (max 30s).
         if running_tasks:
-            logger.info(
-                "mattermost.draining_tasks", count=len(running_tasks)
-            )
+            logger.info("mattermost.draining_tasks", count=len(running_tasks))
             with anyio.move_on_after(30):
                 for task in list(running_tasks.values()):
                     await task.done.wait()
@@ -801,9 +883,13 @@ async def run_main_loop(
         with contextlib.suppress(Exception):
             _SHUTDOWN_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
             _SHUTDOWN_STATE_FILE.write_text(
-                json.dumps({
-                    "reason": reason,
-                    "running_tasks": len(running_tasks),
-                    "timestamp": _time.strftime("%Y-%m-%d %H:%M:%S"),
-                })
+                json.dumps(
+                    {
+                        "reason": reason,
+                        "running_tasks": len(running_tasks),
+                        "timestamp": _time.strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                )
             )
+        # Remove heartbeat file on graceful exit
+        heartbeat_path.unlink(missing_ok=True)

@@ -14,7 +14,7 @@ STATUS = {"running": "▸", "update": "↻", "done": "✓", "fail": "✗"}
 HEADER_SEP = " · "
 HARD_BREAK = "  \n"
 
-MAX_PROGRESS_CMD_LEN = 300
+MAX_PROGRESS_CMD_LEN = 80
 MAX_FILE_CHANGES_INLINE = 3
 
 

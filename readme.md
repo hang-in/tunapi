@@ -25,7 +25,7 @@ Mattermost and Telegram bridge for coding agent CLIs
 
 - **두 가지 트랜스포트** — Mattermost (WebSocket, Bearer 인증) + Telegram (long-polling, 인라인 키보드)
 - **멀티 엔진** — Claude, Codex, Gemini, OpenCode, Pi. 채널별로 다른 엔진 매핑
-- **실시간 진행 표시** — 도구 호출, 파일 변경, 경과 시간을 스트리밍 + typing indicator
+- **실시간 진행 표시** — 도구 호출, 파일 변경, 경과 시간을 스트리밍
 - **세션 이어가기** — resume 토큰으로 대화 컨텍스트 유지 (`session_mode = "chat"`)
 - **라운드테이블** — 여러 에이전트에게 순차적으로 의견 수집 (`!rt`), 후속 토론 지원
 - **프로젝트 & 워크트리** — 채널을 레포에 바인딩, 브랜치별 git worktree

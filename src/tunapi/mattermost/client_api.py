@@ -362,14 +362,6 @@ class HttpMattermostClient:
         return result is not None
 
     # ------------------------------------------------------------------
-    # Typing indicator
-    # ------------------------------------------------------------------
-
-    async def post_typing(self, channel_id: str) -> None:
-        """Send a typing indicator to a channel."""
-        await self._post("/users/me/typing", {"channel_id": channel_id})
-
-    # ------------------------------------------------------------------
     # WebSocket
     # ------------------------------------------------------------------
 

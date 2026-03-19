@@ -27,11 +27,23 @@ class ProgressState:
     context_line: str | None
 
 
+class ActionRecord:
+    """Lightweight record of an action for journal logging."""
+
+    __slots__ = ("action_id", "kind", "title")
+
+    def __init__(self, action_id: str, kind: str, title: str) -> None:
+        self.action_id = action_id
+        self.kind = kind
+        self.title = title
+
+
 class ProgressTracker:
     def __init__(self, *, engine: str) -> None:
         self.engine = engine
         self.resume: ResumeToken | None = None
         self.action_count = 0
+        self.action_history: list[ActionRecord] = []
         self._actions: dict[str, ActionState] = {}
         self._seq = 0
 
@@ -58,6 +70,9 @@ class ProgressTracker:
                 if existing is None:
                     self.action_count += 1
                     first_seen = seq
+                    self.action_history.append(
+                        ActionRecord(action_id, action.kind, action.title)
+                    )
                 else:
                     first_seen = existing.first_seen
                 self._actions[action_id] = ActionState(

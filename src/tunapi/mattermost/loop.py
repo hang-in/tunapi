@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
+import signal
 from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Awaitable, Callable
@@ -711,9 +713,23 @@ async def run_main_loop(
     sessions = ChatSessionStore(_CONFIG_DIR / "mattermost_sessions.json")
     chat_prefs = ChatPrefsStore(_CONFIG_DIR / "mattermost_prefs.json")
     roundtables = RoundtableStore()
+    shutdown = anyio.Event()
 
-    async with cfg.bot.websocket_events() as events, anyio.create_task_group() as tg:
+    # SIGTERM handler — set shutdown event for graceful exit
+    def _on_sigterm(*_: object) -> None:
+        logger.info("mattermost.sigterm_received")
+        shutdown.set()
+
+    with contextlib.suppress(OSError, ValueError):
+        signal.signal(signal.SIGTERM, _on_sigterm)
+
+    async with anyio.create_task_group() as dispatch_tg:
+        async with cfg.bot.websocket_events() as events:
             async for ws_event in events:
+                if shutdown.is_set():
+                    logger.info("mattermost.shutdown_ws_stop")
+                    break
+
                 update = parse_ws_event(
                     ws_event,
                     bot_user_id=cfg.bot_user_id,
@@ -724,7 +740,9 @@ async def run_main_loop(
                     continue
 
                 if isinstance(update, MattermostReactionEvent):
-                    await _handle_cancel_reaction(update, running_tasks, roundtables)
+                    await _handle_cancel_reaction(
+                        update, running_tasks, roundtables
+                    )
                 elif isinstance(update, MattermostIncomingMessage):
                     if not update.text and not update.file_ids:
                         continue
@@ -735,7 +753,7 @@ async def run_main_loop(
                         text=update.text[:100],
                         files=len(update.file_ids),
                     )
-                    tg.start_soon(
+                    dispatch_tg.start_soon(
                         _dispatch_message,
                         update,
                         cfg,
@@ -744,3 +762,14 @@ async def run_main_loop(
                         chat_prefs,
                         roundtables,
                     )
+
+        # WebSocket closed (graceful or not).
+        # Wait for running tasks to complete (max 30s).
+        if running_tasks:
+            logger.info(
+                "mattermost.draining_tasks", count=len(running_tasks)
+            )
+            with anyio.move_on_after(30):
+                for task in list(running_tasks.values()):
+                    await task.done.wait()
+            logger.info("mattermost.drain_complete")

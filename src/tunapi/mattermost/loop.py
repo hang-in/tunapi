@@ -319,6 +319,12 @@ async def _dispatch_message(
     roundtables: RoundtableStore | None = None,
 ) -> None:
     """Dispatch: slash commands → roundtable → voice → trigger check → engine."""
+    # Error boundary policy:
+    # - Runner unavailable (resolve_runner.issue): warn user via message, return
+    # - CWD resolution failure: warn user via message, return
+    # - handle_message() failure: log only (no user message) — the bridge
+    #   layer already sends error/timeout indicators
+    # - Command handler errors: propagate (crash = bug in our code)
     runtime = cfg.runtime
 
     # Helper to send a message to the channel

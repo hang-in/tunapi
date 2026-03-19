@@ -215,6 +215,11 @@ async def _run_single_round(
     ambient_context: RunContext | None,
 ) -> list[tuple[str, str]]:
     """Run one round of agents and return the round transcript."""
+    # Error boundary policy:
+    # - Runner unavailable (resolve_runner.issue): warn user, skip engine, continue round
+    # - CWD resolution failure: warn user, skip engine, continue round
+    # - handle_message() failure: log + warn user, skip engine, continue round
+    # - Cancel event: break loop immediately
     runtime = cfg.runtime
     transport = cfg.exec_cfg.transport
     send_opts = SendOptions(thread_id=session.thread_id)

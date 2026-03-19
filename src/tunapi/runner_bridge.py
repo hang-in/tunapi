@@ -181,9 +181,27 @@ class ProgressEdits:
         self.rendered_seq = 0
         self.signal_send, self.signal_recv = anyio.create_memory_object_stream(1)
 
+    async def _typing_heartbeat(self) -> None:
+        """Send typing indicator every 3s if transport supports it."""
+        client = getattr(self.transport, "_client", None)
+        if client is None or not hasattr(client, "post_typing"):
+            return
+        while True:
+            try:
+                await client.post_typing(str(self.channel_id))
+            except Exception:  # noqa: BLE001
+                pass
+            await anyio.sleep(3)
+
     async def run(self) -> None:
         if self.progress_ref is None:
             return
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(self._typing_heartbeat)
+            await self._run_progress_loop()
+            tg.cancel_scope.cancel()
+
+    async def _run_progress_loop(self) -> None:
         while True:
             while self.rendered_seq == self.event_seq:
                 try:

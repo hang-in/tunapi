@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -43,6 +44,9 @@ if TYPE_CHECKING:
     from ..runner_bridge import RunningTasks
 
 logger = get_logger(__name__)
+
+# Callback type for sending a message to a channel.
+type _SendFn = Callable[[RenderedMessage], Awaitable[None]]
 
 _CONFIG_DIR = Path.home() / ".tunapi"
 
@@ -341,6 +345,7 @@ async def _try_dispatch_command(
     sessions: ChatSessionStore,
     chat_prefs: ChatPrefsStore | None,
     roundtables: RoundtableStore | None,
+    send: _SendFn,
 ) -> bool:
     """Handle slash/bang commands. Returns True if a command was dispatched."""
     cmd, args = parse_command(msg.text)
@@ -348,9 +353,6 @@ async def _try_dispatch_command(
         return False
 
     runtime = cfg.runtime
-
-    async def send(message: RenderedMessage) -> None:
-        await _send_to_channel(cfg, msg.channel_id, message)
 
     match cmd:
         case "new":
@@ -463,6 +465,7 @@ async def _resolve_prompt(
     msg: MattermostIncomingMessage,
     cfg: MattermostBridgeConfig,
     chat_prefs: ChatPrefsStore | None,
+    send: _SendFn,
 ) -> _ResolvedPrompt | None:
     """Resolve user input into a clean prompt text.
 
@@ -470,10 +473,6 @@ async def _resolve_prompt(
     trigger mode check, and @mention stripping.
     Returns None if the message should not be dispatched to an engine.
     """
-
-    async def send(message: RenderedMessage) -> None:
-        await _send_to_channel(cfg, msg.channel_id, message)
-
     # -- Auto file put: attachment with no text → save to project --
     if msg.file_ids and not msg.text.strip() and cfg.files_enabled:
         results = await _put_files(cfg, msg.channel_id, list(msg.file_ids))
@@ -526,6 +525,7 @@ async def _run_engine(
     running_tasks: RunningTasks,
     sessions: ChatSessionStore,
     chat_prefs: ChatPrefsStore | None,
+    send: _SendFn,
 ) -> None:
     """Resolve engine/context and run the agent.
 
@@ -536,9 +536,6 @@ async def _run_engine(
     - Command handler errors: propagate (crash = bug in our code)
     """
     runtime = cfg.runtime
-
-    async def send(message: RenderedMessage) -> None:
-        await _send_to_channel(cfg, msg.channel_id, message)
 
     # -- Resume token --
     resume_token: ResumeToken | None = None
@@ -665,19 +662,23 @@ async def _dispatch_message(
     roundtables: RoundtableStore | None = None,
 ) -> None:
     """Dispatch: slash commands → prompt resolution → engine run."""
+
+    async def send(message: RenderedMessage) -> None:
+        await _send_to_channel(cfg, msg.channel_id, message)
+
     # 1. Command handling
     if await _try_dispatch_command(
-        msg, cfg, running_tasks, sessions, chat_prefs, roundtables
+        msg, cfg, running_tasks, sessions, chat_prefs, roundtables, send
     ):
         return
 
     # 2. Prompt resolution (files, voice, trigger, mention strip)
-    resolved = await _resolve_prompt(msg, cfg, chat_prefs)
+    resolved = await _resolve_prompt(msg, cfg, chat_prefs, send)
     if resolved is None:
         return
 
     # 3. Engine execution (context, runner, persona, session → run)
-    await _run_engine(resolved, msg, cfg, running_tasks, sessions, chat_prefs)
+    await _run_engine(resolved, msg, cfg, running_tasks, sessions, chat_prefs, send)
 
 
 async def run_main_loop(

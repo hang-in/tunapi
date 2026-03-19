@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import msgspec
+import msgspec.structs
 
 from ..context import RunContext
 from ..logging import get_logger
@@ -67,12 +68,8 @@ class ChatPrefsStore(JsonStateStore[_State]):
     async def set_default_engine(self, channel_id: str, engine: str) -> None:
         async with self._lock:
             self._reload_locked_if_needed()
-            prefs = self._get(channel_id)
-            prefs = _ChatPrefs(
-                default_engine=engine,
-                trigger_mode=prefs.trigger_mode,
-                context_project=prefs.context_project,
-                context_branch=prefs.context_branch,
+            prefs = msgspec.structs.replace(
+                self._get(channel_id), default_engine=engine
             )
             self._set(channel_id, prefs)
             self._save_locked()
@@ -87,12 +84,8 @@ class ChatPrefsStore(JsonStateStore[_State]):
     ) -> None:
         async with self._lock:
             self._reload_locked_if_needed()
-            prefs = self._get(channel_id)
-            prefs = _ChatPrefs(
-                default_engine=prefs.default_engine,
-                trigger_mode=mode,
-                context_project=prefs.context_project,
-                context_branch=prefs.context_branch,
+            prefs = msgspec.structs.replace(
+                self._get(channel_id), trigger_mode=mode
             )
             self._set(channel_id, prefs)
             self._save_locked()
@@ -113,10 +106,8 @@ class ChatPrefsStore(JsonStateStore[_State]):
     ) -> None:
         async with self._lock:
             self._reload_locked_if_needed()
-            prefs = self._get(channel_id)
-            prefs = _ChatPrefs(
-                default_engine=prefs.default_engine,
-                trigger_mode=prefs.trigger_mode,
+            prefs = msgspec.structs.replace(
+                self._get(channel_id),
                 context_project=context.project,
                 context_branch=context.branch,
             )

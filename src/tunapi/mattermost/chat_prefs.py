@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import anyio
 import msgspec
 
 from ..context import RunContext
 from ..logging import get_logger
+from ..state_store import JsonStateStore
 
 logger = get_logger(__name__)
 
@@ -35,36 +35,18 @@ class _State(msgspec.Struct, forbid_unknown_fields=False):
     personas: dict[str, Persona] = msgspec.field(default_factory=dict)
 
 
-_DECODER = msgspec.json.Decoder(_State)
-_ENCODER = msgspec.json.Encoder()
-
-
-class ChatPrefsStore:
+class ChatPrefsStore(JsonStateStore[_State]):
     """Persistent per-channel preferences (engine, trigger mode, context)."""
 
     def __init__(self, path: Path) -> None:
-        self._path = path
-        self._state = _State()
-        self._lock = anyio.Lock()
-        self._loaded = False
-
-    async def _load(self) -> None:
-        if self._loaded:
-            return
-        if self._path.exists():
-            try:
-                raw = self._path.read_bytes()
-                self._state = _DECODER.decode(raw)
-            except Exception:  # noqa: BLE001
-                logger.warning("chat_prefs.load_error", path=str(self._path))
-                self._state = _State()
-        self._loaded = True
-
-    async def _save(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        data = msgspec.to_builtins(self._state)
-        raw = msgspec.json.encode(data)
-        self._path.write_bytes(raw)
+        super().__init__(
+            path,
+            version=STATE_VERSION,
+            state_type=_State,
+            state_factory=_State,
+            log_prefix="chat_prefs",
+            logger=logger,
+        )
 
     def _get(self, channel_id: str) -> _ChatPrefs:
         return self._state.chats.get(channel_id, _ChatPrefs())
@@ -79,12 +61,12 @@ class ChatPrefsStore:
 
     async def get_default_engine(self, channel_id: str) -> str | None:
         async with self._lock:
-            await self._load()
+            self._reload_locked_if_needed()
             return self._get(channel_id).default_engine
 
     async def set_default_engine(self, channel_id: str, engine: str) -> None:
         async with self._lock:
-            await self._load()
+            self._reload_locked_if_needed()
             prefs = self._get(channel_id)
             prefs = _ChatPrefs(
                 default_engine=engine,
@@ -93,18 +75,18 @@ class ChatPrefsStore:
                 context_branch=prefs.context_branch,
             )
             self._set(channel_id, prefs)
-            await self._save()
+            self._save_locked()
 
     async def get_trigger_mode(self, channel_id: str) -> str | None:
         async with self._lock:
-            await self._load()
+            self._reload_locked_if_needed()
             return self._get(channel_id).trigger_mode
 
     async def set_trigger_mode(
         self, channel_id: str, mode: str
     ) -> None:
         async with self._lock:
-            await self._load()
+            self._reload_locked_if_needed()
             prefs = self._get(channel_id)
             prefs = _ChatPrefs(
                 default_engine=prefs.default_engine,
@@ -113,11 +95,11 @@ class ChatPrefsStore:
                 context_branch=prefs.context_branch,
             )
             self._set(channel_id, prefs)
-            await self._save()
+            self._save_locked()
 
     async def get_context(self, channel_id: str) -> RunContext | None:
         async with self._lock:
-            await self._load()
+            self._reload_locked_if_needed()
             prefs = self._get(channel_id)
             if prefs.context_project is None:
                 return None
@@ -130,7 +112,7 @@ class ChatPrefsStore:
         self, channel_id: str, context: RunContext
     ) -> None:
         async with self._lock:
-            await self._load()
+            self._reload_locked_if_needed()
             prefs = self._get(channel_id)
             prefs = _ChatPrefs(
                 default_engine=prefs.default_engine,
@@ -139,31 +121,31 @@ class ChatPrefsStore:
                 context_branch=context.branch,
             )
             self._set(channel_id, prefs)
-            await self._save()
+            self._save_locked()
 
     # -- Persona API (global, not per-channel) --
 
     async def get_persona(self, name: str) -> Persona | None:
         async with self._lock:
-            await self._load()
+            self._reload_locked_if_needed()
             return self._state.personas.get(name)
 
     async def list_personas(self) -> dict[str, Persona]:
         async with self._lock:
-            await self._load()
+            self._reload_locked_if_needed()
             return dict(self._state.personas)
 
     async def add_persona(self, name: str, prompt: str) -> None:
         async with self._lock:
-            await self._load()
+            self._reload_locked_if_needed()
             self._state.personas[name] = Persona(name=name, prompt=prompt)
-            await self._save()
+            self._save_locked()
 
     async def remove_persona(self, name: str) -> bool:
         async with self._lock:
-            await self._load()
+            self._reload_locked_if_needed()
             if name not in self._state.personas:
                 return False
             del self._state.personas[name]
-            await self._save()
+            self._save_locked()
             return True

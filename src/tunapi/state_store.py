@@ -7,7 +7,7 @@ from typing import Any, Protocol
 import anyio
 import msgspec
 
-from ..utils.json_state import atomic_write_json
+from .utils.json_state import atomic_write_json
 
 
 class _Logger(Protocol):

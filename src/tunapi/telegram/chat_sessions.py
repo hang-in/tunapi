@@ -6,7 +6,7 @@ import msgspec
 
 from ..logging import get_logger
 from ..model import ResumeToken
-from .state_store import JsonStateStore
+from ..state_store import JsonStateStore
 
 logger = get_logger(__name__)
 

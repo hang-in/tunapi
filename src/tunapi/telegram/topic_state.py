@@ -9,7 +9,7 @@ from ..context import RunContext
 from ..logging import get_logger
 from ..model import ResumeToken
 from .engine_overrides import EngineOverrides, normalize_overrides
-from .state_store import JsonStateStore
+from ..state_store import JsonStateStore
 
 logger = get_logger(__name__)
 

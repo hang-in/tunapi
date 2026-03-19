@@ -25,15 +25,17 @@ Mattermost and Telegram bridge for coding agent CLIs
 
 - **두 가지 트랜스포트** — Mattermost (WebSocket, Bearer 인증) + Telegram (long-polling, 인라인 키보드)
 - **멀티 엔진** — Claude, Codex, Gemini, OpenCode, Pi. 채널별로 다른 엔진 매핑
-- **실시간 진행 표시** — 도구 호출, 파일 변경, 경과 시간을 스트리밍
+- **실시간 진행 표시** — 도구 호출, 파일 변경, 경과 시간을 스트리밍 + typing indicator
 - **세션 이어가기** — resume 토큰으로 대화 컨텍스트 유지 (`session_mode = "chat"`)
+- **라운드테이블** — 여러 에이전트에게 순차적으로 의견 수집 (`!rt`), 후속 토론 지원
 - **프로젝트 & 워크트리** — 채널을 레포에 바인딩, 브랜치별 git worktree
 - **취소** — Mattermost: 🛑 반응 / Telegram: 인라인 버튼
 - **파일 전송** — 첨부 파일 자동 인식, 에이전트 작업 디렉토리에 저장
 - **음성 전사** — 음성 메시지를 텍스트로 변환하여 에이전트에 전달
 - **트리거 모드** — @멘션 감지로 봇 호출 (그룹 채널에서 유용)
 - **채팅 설정** — 채널별 엔진/트리거 모드 저장 (`/model`, `/trigger`)
-- **슬래시 커맨드** — `/help`, `/model`, `/trigger`, `/status`, `/cancel`, `/file`, `/new`
+- **슬래시 커맨드** — `/help`, `/model`, `/trigger`, `/status`, `/cancel`, `/file`, `/new`, `/project`, `/persona`, `/rt`
+- **Graceful shutdown** — SIGTERM 시 진행 중 작업 완료 대기 + outbox drain
 - **플러그인** — 엔진, 트랜스포트, 커맨드를 Python entry point로 추가
 
 > **참고:** 에이전트는 이미지를 분석할 수 없습니다. 이미지 파일은 전달되지만 내용 분석은 지원되지 않습니다.
@@ -130,8 +132,23 @@ chat_id = "gemini-채널-id"
 
 ```sh
 tunapi                                    # 포그라운드 실행
-nohup tunapi > /tmp/tunapi.log 2>&1 &    # 백그라운드 실행
 tunapi --debug                            # 디버그 모드
+```
+
+#### systemd로 실행 (권장)
+
+```sh
+cp deploy/tunapi.service ~/.config/systemd/user/
+# PATH 환경변수를 자신의 환경에 맞게 수정
+systemctl --user daemon-reload
+systemctl --user enable --now tunapi
+loginctl enable-linger $USER              # 로그아웃 후에도 유지
+```
+
+```sh
+systemctl --user status tunapi            # 상태 확인
+systemctl --user restart tunapi           # 재시작
+journalctl --user -u tunapi -f            # 실시간 로그
 ```
 
 | 동작 | 방법 |
@@ -141,6 +158,9 @@ tunapi --debug                            # 디버그 모드
 | 프로젝트 지정 | `/my-project 버그 고쳐줘` |
 | 워크트리 사용 | `/my-project @feat/branch 작업해줘` |
 | 새 세션 시작 | `/new` |
+| 라운드테이블 | `!rt "주제"` / `!rt "주제" --rounds 2` |
+| 후속 토론 | `!rt follow "질문"` / `!rt follow claude "질문"` |
+| 페르소나 설정 | `/persona add 이름 프롬프트` |
 | 실행 취소 | 🛑 반응 (Mattermost) / Cancel 버튼 (Telegram) |
 | 설정 확인 | `tunapi config list` |
 
@@ -168,6 +188,9 @@ tunapi --debug                            # 디버그 모드
 | 트리거 모드 (@멘션) | ✅ | ✅ |
 | 슬래시 커맨드 | ✅ | ✅ |
 | 채팅 설정 저장 | ✅ | ✅ |
+| 라운드테이블 | ✅ | — |
+| Typing indicator | ✅ | — |
+| Graceful shutdown | ✅ | — |
 | 토픽 / 포럼 | — | ✅ |
 | 포워드 합치기 | — | ✅ |
 | 미디어 그룹 | — | ✅ |

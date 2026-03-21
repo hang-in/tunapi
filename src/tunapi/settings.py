@@ -1,0 +1,517 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Annotated, Any, ClassVar, Literal
+from collections.abc import Iterable
+
+from pydantic import (
+    BeforeValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
+from pydantic.types import StrictInt
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings.sources import TomlConfigSettingsSource
+
+from .config import (
+    ConfigError,
+    HOME_CONFIG_PATH,
+    ProjectConfig,
+    ProjectsConfig,
+)
+from .config_migrations import migrate_config_file
+
+
+NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+def _normalize_engine_id(
+    value: str,
+    *,
+    engine_ids: Iterable[str],
+    config_path: Path,
+    label: str,
+) -> str:
+    engine_map = {engine.lower(): engine for engine in engine_ids}
+    engine = engine_map.get(value.lower())
+    if engine is None:
+        available = ", ".join(sorted(engine_map.values()))
+        raise ConfigError(
+            f"Unknown `{label}` {value!r} in {config_path}. Available: {available}."
+        )
+    return engine
+
+
+def _normalize_project_path(value: str, *, config_path: Path) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = config_path.parent / path
+    return path
+
+
+def _coerce_chat_id(value: Any) -> Any:
+    if isinstance(value, str):
+        return int(value.strip())
+    return value
+
+
+ChatId = Annotated[StrictInt, BeforeValidator(_coerce_chat_id)]
+
+
+class TelegramTopicsSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    enabled: bool = False
+    scope: Literal["auto", "main", "projects", "all"] = "auto"
+
+
+class TelegramFilesSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    max_upload_bytes: ClassVar[int] = 20 * 1024 * 1024
+    max_download_bytes: ClassVar[int] = 50 * 1024 * 1024
+
+    enabled: bool = False
+    auto_put: bool = True
+    auto_put_mode: Literal["upload", "prompt"] = "upload"
+    uploads_dir: NonEmptyStr = "incoming"
+    allowed_user_ids: list[StrictInt] = Field(default_factory=list)
+    deny_globs: list[NonEmptyStr] = Field(
+        default_factory=lambda: [
+            ".git/**",
+            ".env",
+            ".envrc",
+            "*.pem",
+            ".ssh/**",
+        ]
+    )
+
+    @field_validator("uploads_dir")
+    @classmethod
+    def _validate_uploads_dir(cls, value: str) -> str:
+        if Path(value).is_absolute():
+            raise ValueError("files.uploads_dir must be a relative path")
+        return value
+
+
+class TelegramTransportSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    bot_token: NonEmptyStr
+    chat_id: ChatId
+    allowed_user_ids: list[StrictInt] = Field(default_factory=list)
+    message_overflow: Literal["trim", "split"] = "trim"
+    voice_transcription: bool = False
+    voice_max_bytes: StrictInt = 10 * 1024 * 1024
+    voice_transcription_model: NonEmptyStr = "gpt-4o-mini-transcribe"
+    voice_transcription_base_url: NonEmptyStr | None = None
+    voice_transcription_api_key: NonEmptyStr | None = None
+    session_mode: Literal["stateless", "chat"] = "stateless"
+    show_resume_line: bool = True
+    forward_coalesce_s: float = Field(default=1.0, ge=0)
+    media_group_debounce_s: float = Field(default=1.0, ge=0)
+    topics: TelegramTopicsSettings = Field(default_factory=TelegramTopicsSettings)
+    files: TelegramFilesSettings = Field(default_factory=TelegramFilesSettings)
+
+
+class MattermostFilesSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    enabled: bool = False
+    uploads_dir: NonEmptyStr = "incoming"
+    max_upload_bytes: StrictInt = 20 * 1024 * 1024
+    max_download_bytes: StrictInt = 50 * 1024 * 1024
+    deny_globs: list[NonEmptyStr] = Field(
+        default_factory=lambda: [".git/**", ".env", ".envrc", "*.pem", ".ssh/**"]
+    )
+
+
+class MattermostVoiceSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    enabled: bool = False
+    max_bytes: StrictInt = 10 * 1024 * 1024
+    model: NonEmptyStr = "gpt-4o-mini-transcribe"
+    base_url: NonEmptyStr | None = None
+    api_key: NonEmptyStr | None = None
+
+
+class RoundtableSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    engines: list[NonEmptyStr] = Field(default_factory=list)
+    rounds: int = Field(default=1, ge=1)
+    max_rounds: int = Field(default=3, ge=1)
+
+
+class SlackFilesSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    enabled: bool = False
+    uploads_dir: NonEmptyStr = "incoming"
+    max_upload_bytes: StrictInt = 20 * 1024 * 1024
+    max_download_bytes: StrictInt = 50 * 1024 * 1024
+    deny_globs: list[NonEmptyStr] = Field(
+        default_factory=lambda: [".git/**", ".env", ".envrc", "*.pem", ".ssh/**"]
+    )
+
+
+class SlackVoiceSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    enabled: bool = False
+    max_bytes: StrictInt = 10 * 1024 * 1024
+    model: NonEmptyStr = "gpt-4o-mini-transcribe"
+    base_url: NonEmptyStr | None = None
+    api_key: NonEmptyStr | None = None
+
+
+class SlackTransportSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    bot_token: NonEmptyStr = ""
+    app_token: NonEmptyStr = ""
+    channel_id: NonEmptyStr = ""
+    allowed_channel_ids: list[NonEmptyStr] = Field(default_factory=list)
+    allowed_user_ids: list[NonEmptyStr] = Field(default_factory=list)
+    session_mode: Literal["stateless", "chat"] = "stateless"
+    show_resume_line: bool = True
+    message_overflow: Literal["trim", "split"] = "trim"
+    trigger_mode: Literal["all", "mentions"] = "mentions"
+    files: SlackFilesSettings = Field(default_factory=SlackFilesSettings)
+    voice: SlackVoiceSettings = Field(default_factory=SlackVoiceSettings)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_tokens_from_env(cls, data: Any) -> Any:
+        """Allow tokens to be set via SLACK_BOT_TOKEN and SLACK_APP_TOKEN env vars."""
+        if isinstance(data, dict):
+            import os
+
+            if not data.get("bot_token"):
+                env_token = os.environ.get("SLACK_BOT_TOKEN", "")
+                if env_token:
+                    data["bot_token"] = env_token
+            if not data.get("app_token"):
+                env_token = os.environ.get("SLACK_APP_TOKEN", "")
+                if env_token:
+                    data["app_token"] = env_token
+        return data
+
+
+class MattermostTransportSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    url: NonEmptyStr
+    token: NonEmptyStr = ""
+    channel_id: NonEmptyStr = ""
+    allowed_channel_ids: list[NonEmptyStr] = Field(default_factory=list)
+    allowed_user_ids: list[NonEmptyStr] = Field(default_factory=list)
+    session_mode: Literal["stateless", "chat"] = "stateless"
+    show_resume_line: bool = True
+    message_overflow: Literal["trim", "split"] = "trim"
+    trigger_mode: Literal["all", "mentions"] = "all"
+    files: MattermostFilesSettings = Field(default_factory=MattermostFilesSettings)
+    voice: MattermostVoiceSettings = Field(default_factory=MattermostVoiceSettings)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_token_from_env(cls, data: Any) -> Any:
+        """Allow token to be set via MATTERMOST_TOKEN env var."""
+        if isinstance(data, dict) and not data.get("token"):
+            import os
+
+            env_token = os.environ.get("MATTERMOST_TOKEN", "")
+            if env_token:
+                data["token"] = env_token
+        return data
+
+
+class TransportsSettings(BaseModel):
+    telegram: TelegramTransportSettings | None = None
+    mattermost: MattermostTransportSettings | None = None
+    slack: SlackTransportSettings | None = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+class PluginsSettings(BaseModel):
+    enabled: list[NonEmptyStr] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
+
+
+class ProjectSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    path: NonEmptyStr
+    worktrees_dir: NonEmptyStr = ".worktrees"
+    default_engine: NonEmptyStr | None = None
+    worktree_base: NonEmptyStr | None = None
+    chat_id: ChatId | NonEmptyStr | None = None
+
+
+class TunapiSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        extra="allow",
+        env_prefix="TUNAPI__",
+        env_nested_delimiter="__",
+        str_strip_whitespace=True,
+    )
+
+    watch_config: bool = False
+    default_engine: NonEmptyStr = "codex"
+    default_project: NonEmptyStr | None = None
+    projects_root: NonEmptyStr | None = None
+    projects: dict[str, ProjectSettings] = Field(default_factory=dict)
+
+    transport: NonEmptyStr = "mattermost"
+    transports_enabled: list[NonEmptyStr] | None = None
+    transports: TransportsSettings
+
+    plugins: PluginsSettings = Field(default_factory=PluginsSettings)
+    roundtable: RoundtableSettings = Field(default_factory=RoundtableSettings)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_telegram_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict) and ("bot_token" in data or "chat_id" in data):
+            raise ValueError(
+                "Move bot_token/chat_id under [transports.telegram] "
+                'and set transport = "telegram".'
+            )
+        return data
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            TomlConfigSettingsSource(settings_cls),
+            file_secret_settings,
+        )
+
+    def engine_config(self, engine_id: str, *, config_path: Path) -> dict[str, Any]:
+        extra = self.model_extra or {}
+        raw = extra.get(engine_id)
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict):
+            raise ConfigError(
+                f"Invalid `{engine_id}` config in {config_path}; expected a table."
+            )
+        return raw
+
+    def transport_config(
+        self, transport_id: str, *, config_path: Path
+    ) -> dict[str, Any]:
+        if transport_id == "telegram":
+            if self.transports.telegram is None:
+                raise ConfigError(f"Missing [transports.telegram] in {config_path}.")
+            return self.transports.telegram.model_dump()
+        if transport_id == "mattermost":
+            if self.transports.mattermost is None:
+                raise ConfigError(f"Missing [transports.mattermost] in {config_path}.")
+            return self.transports.mattermost.model_dump()
+        if transport_id == "slack":
+            if self.transports.slack is None:
+                raise ConfigError(f"Missing [transports.slack] in {config_path}.")
+            return self.transports.slack.model_dump()
+        extra = self.transports.model_extra or {}
+        raw = extra.get(transport_id)
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict):
+            raise ConfigError(
+                f"Invalid `transports.{transport_id}` in {config_path}; "
+                "expected a table."
+            )
+        return raw
+
+    def resolve_transport_ids(
+        self, *, override: str | None = None
+    ) -> list[str]:
+        """Return the list of transport ids to run.
+
+        Priority:
+        1. CLI ``--transport`` override (single value)
+        2. ``transports_enabled`` list from config
+        3. ``transport`` single value (legacy, promoted to 1-element list)
+        """
+        if override is not None:
+            return [override.strip()]
+        if self.transports_enabled:
+            return list(self.transports_enabled)
+        return [self.transport]
+
+    def to_projects_config(
+        self,
+        *,
+        config_path: Path,
+        engine_ids: Iterable[str],
+        reserved: Iterable[str] = ("cancel",),
+    ) -> ProjectsConfig:
+        default_project = self.default_project
+        tg = self.transports.telegram
+        default_chat_id: int | str | None = tg.chat_id if tg is not None else None
+        mm = self.transports.mattermost
+        if mm is not None and mm.channel_id:
+            default_chat_id = mm.channel_id
+
+        sl = self.transports.slack
+        if sl is not None and sl.channel_id:
+            default_chat_id = sl.channel_id
+
+        reserved_lower = {value.lower() for value in reserved}
+        engine_map = {engine.lower(): engine for engine in engine_ids}
+        projects: dict[str, ProjectConfig] = {}
+        chat_map: dict[int | str, str] = {}
+
+        for raw_alias, entry in self.projects.items():
+            alias = raw_alias
+            alias_key = alias.lower()
+            if alias_key in engine_map or alias_key in reserved_lower:
+                raise ConfigError(
+                    f"Invalid project alias {alias!r} in {config_path}; "
+                    "aliases must not match engine ids or reserved commands."
+                )
+            if alias_key in projects:
+                raise ConfigError(
+                    f"Duplicate project alias {alias!r} in {config_path}."
+                )
+
+            path = _normalize_project_path(entry.path, config_path=config_path)
+
+            worktrees_dir = Path(entry.worktrees_dir).expanduser()
+
+            default_engine = None
+            if entry.default_engine is not None:
+                default_engine = _normalize_engine_id(
+                    entry.default_engine,
+                    engine_ids=engine_ids,
+                    config_path=config_path,
+                    label=f"projects.{alias}.default_engine",
+                )
+
+            worktree_base = entry.worktree_base
+
+            chat_id = entry.chat_id
+            if chat_id is not None:
+                if default_chat_id is not None and chat_id == default_chat_id:
+                    raise ConfigError(
+                        f"Invalid `projects.{alias}.chat_id` in {config_path}; "
+                        "must not match the default transport chat_id."
+                    )
+                if chat_id in chat_map:
+                    existing = chat_map[chat_id]
+                    raise ConfigError(
+                        f"Duplicate `projects.*.chat_id` {chat_id} in {config_path}; "
+                        f"already used by {existing!r}."
+                    )
+                chat_map[chat_id] = alias_key
+
+            projects[alias_key] = ProjectConfig(
+                alias=alias,
+                path=path,
+                worktrees_dir=worktrees_dir,
+                default_engine=default_engine,
+                worktree_base=worktree_base,
+                chat_id=chat_id,
+            )
+
+        if default_project is not None:
+            default_key = default_project.lower()
+            if default_key not in projects:
+                raise ConfigError(
+                    f"Invalid `default_project` {default_project!r} in {config_path}; "
+                    "no matching project alias found."
+                )
+            default_project = default_key
+
+        return ProjectsConfig(
+            projects=projects,
+            default_project=default_project,
+            chat_map=chat_map,
+        )
+
+
+def load_settings(path: str | Path | None = None) -> tuple[TunapiSettings, Path]:
+    cfg_path = _resolve_config_path(path)
+    _ensure_config_file(cfg_path)
+    migrate_config_file(cfg_path)
+    return _load_settings_from_path(cfg_path), cfg_path
+
+
+def load_settings_if_exists(
+    path: str | Path | None = None,
+) -> tuple[TunapiSettings, Path] | None:
+    cfg_path = _resolve_config_path(path)
+    if cfg_path.exists():
+        if not cfg_path.is_file():
+            raise ConfigError(
+                f"Config path {cfg_path} exists but is not a file."
+            ) from None
+        migrate_config_file(cfg_path)
+        return _load_settings_from_path(cfg_path), cfg_path
+    return None
+
+
+def validate_settings_data(
+    data: dict[str, Any], *, config_path: Path
+) -> TunapiSettings:
+    try:
+        return TunapiSettings.model_validate(data)
+    except ValidationError as exc:
+        raise ConfigError(f"Invalid config in {config_path}: {exc}") from exc
+
+
+def require_telegram(settings: TunapiSettings, config_path: Path) -> tuple[str, int]:
+    if settings.transport != "telegram":
+        raise ConfigError(
+            f"Unsupported transport {settings.transport!r} in {config_path} "
+            "(telegram only for now)."
+        )
+    tg = settings.transports.telegram
+    if tg is None:
+        raise ConfigError(f"Missing [transports.telegram] in {config_path}.")
+    return tg.bot_token, tg.chat_id
+
+
+def _resolve_config_path(path: str | Path | None) -> Path:
+    return Path(path).expanduser() if path else HOME_CONFIG_PATH
+
+
+def _ensure_config_file(cfg_path: Path) -> None:
+    if cfg_path.exists() and not cfg_path.is_file():
+        raise ConfigError(f"Config path {cfg_path} exists but is not a file.") from None
+    if not cfg_path.exists():
+        raise ConfigError(f"Missing config file {cfg_path}.") from None
+
+
+def _load_settings_from_path(cfg_path: Path) -> TunapiSettings:
+    cfg = dict(TunapiSettings.model_config)
+    cfg["toml_file"] = cfg_path
+    Bound = type(
+        "TunapiSettingsBound",
+        (TunapiSettings,),
+        {"model_config": SettingsConfigDict(**cfg)},
+    )
+    try:
+        return Bound()
+    except ValidationError as exc:
+        raise ConfigError(f"Invalid config in {cfg_path}: {exc}") from exc
+    except Exception as exc:  # pragma: no cover - safety net
+        raise ConfigError(f"Failed to load config {cfg_path}: {exc}") from exc
